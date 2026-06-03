@@ -84,23 +84,53 @@ def to_named_bytes(uploaded, fallback_name):
     return (name, data)
 
 
-def generate_one(client, jewelry, wearing, scene, quality=QUALITY):
-    """单场景生成,返回 PNG bytes;失败抛异常由上层捕获。quality 可逐张指定。"""
+# 指定的两款首饰盒参考图(放在仓库根目录,与 app.py 同级)
+# 文件名用 box_black / box_burgundy,后缀 png/jpg/jpeg/webp 都可以
+BOX_FILES = {"box_black": "box_black", "box_burgundy": "box_burgundy"}
+_IMG_EXTS = [".png", ".jpg", ".jpeg", ".webp"]
+
+
+def load_box_images():
+    """启动时读取两款盒子图(若存在),返回 {ref: (filename, bytes)}。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    boxes = {}
+    for ref, stem in BOX_FILES.items():
+        for ext in _IMG_EXTS:
+            path = os.path.join(here, stem + ext)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    boxes[ref] = (stem + ext, f.read())
+                break
+    return boxes
+
+
+def generate_one(client, jewelry, second, scene, quality=QUALITY):
+    """单场景生成,返回 PNG bytes。second 是第二张参考图 (name, bytes) 或 None。"""
     full_prompt = FIDELITY_RULES + "\n【本张场景】" + scene["prompt"]
-    j_name, j_bytes = jewelry
-    w_name, w_bytes = wearing
+    images = [(jewelry[0], io.BytesIO(jewelry[1]))]
+    if second is not None:
+        images.append((second[0], io.BytesIO(second[1])))
     result = client.images.edit(
         model=MODEL,
-        image=[
-            (j_name, io.BytesIO(j_bytes)),
-            (w_name, io.BytesIO(w_bytes)),
-        ],
+        image=images,
         prompt=full_prompt,
         size=SIZE,
         quality=quality,
         n=1,
     )
     return base64.b64decode(result.data[0].b64_json)
+
+
+def pick_second_ref(scene, wearing, boxes):
+    """按场景的 ref 选第二张参考图:佩戴图 / 盒子图 / 无。"""
+    ref = scene.get("ref", "wearing")
+    if ref == "wearing":
+        return wearing
+    if ref in boxes:           # box_black / box_burgundy 且文件存在
+        return boxes[ref]
+    if ref in BOX_FILES:       # 指定了盒子但文件没上传 -> 退化成只用首饰图(靠文字描述)
+        return None
+    return None                # ref == "none"
 
 
 def assign_qualities(scenes, n_high, low_tier):
@@ -168,6 +198,10 @@ if run:
 
     jewelry = to_named_bytes(jewelry_file, "jewelry.png")
     wearing = to_named_bytes(wearing_file, "wearing.png")
+    boxes = load_box_images()  # 两款盒子参考图(若已上传到仓库)
+    if not boxes:
+        st.warning("未检测到盒子参考图(box_black.png / box_burgundy.png),"
+                   "首饰盒场景将退化为按文字描述生成。把两张盒子图传到仓库即可严格还原。")
 
     # 本批的保存文件夹(按时间命名,自动留底)
     run_dir = os.path.join(OUTPUT_ROOT, datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S"))
@@ -184,7 +218,8 @@ if run:
         q = qualities[i - 1]
         progress.progress((i - 1) / len(scenes), text=f"生成第 {i}/{len(scenes)} 张({q})...")
         try:
-            png = generate_one(client, jewelry, wearing, scene, quality=q)
+            second = pick_second_ref(scene, wearing, boxes)
+            png = generate_one(client, jewelry, second, scene, quality=q)
             results.append((scene["name"], png))
             # 立刻写盘保存
             with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:
