@@ -176,6 +176,13 @@ jewelry_type = st.selectbox(
     options=["手链", "项链", "耳钉/耳环", "戒指", "手镯", "脚链", "自动判断"],
     index=0,
 )
+
+scol1, scol2 = st.columns(2)
+with scol1:
+    season = st.selectbox("季节(决定穿搭)", options=["不限", "夏天", "冬天"], index=0)
+with scol2:
+    env = st.selectbox("场景环境", options=["不限", "室内", "户外"], index=0)
+
 st.caption("每个款式固定生成 18 张:真人佩戴 10 张 + 手拿 4 张 + 首饰盒/静物 4 张,全部不露脸。")
 
 qcol1, qcol2 = st.columns(2)
@@ -192,7 +199,7 @@ if run:
         st.warning("请先上传两张图片。")
         st.stop()
 
-    scenes = build_scene_pool(jewelry_type=jewelry_type)  # 固定 18 张
+    scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)  # 固定 18 张
     qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
     client = OpenAI(api_key=api_key)
 
