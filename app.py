@@ -254,55 +254,66 @@ def render_buyer_show(api_key):
     with qcol2:
         low_tier = st.selectbox("其余张数的画质", options=["medium", "low"], index=0, key="bs_low")
 
-    if not st.button("🚀 开始生成", type="primary", use_container_width=True, key="bs_run"):
-        return
-    if not jewelry_file or not wearing_file:
-        st.warning("请先上传两张图片。")
-        return
+    run = st.button("🚀 开始生成", type="primary", use_container_width=True, key="bs_run")
 
-    if grouped:
-        scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season, env=env)
-    else:
-        scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)
-    qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
-    client = OpenAI(api_key=api_key)
-
-    jewelry = to_named_bytes(jewelry_file, "jewelry.png")
-    wearing = to_named_bytes(wearing_file, "wearing.png")
-    boxes = load_box_images()
-    if not boxes:
-        st.warning("未检测到盒子参考图(box_black / box_burgundy),首饰盒场景将按文字描述生成。")
-
-    run_dir = new_run_dir()
-    results, group_base = [], {}
-    progress = st.progress(0.0, text="准备中...")
-    st.subheader("生成结果(实时更新)")
-    cols = st.columns(3)
-    for i, scene in enumerate(scenes, 1):
-        q = qualities[i - 1]
-        progress.progress((i - 1) / len(scenes), text=f"生成第 {i}/{len(scenes)} 张({q})...")
-        try:
-            if scene.get("ref") == "base":
-                base_png = group_base.get(scene.get("group"))
-                second = ("base.png", base_png) if base_png else wearing
+    if run:
+        if not jewelry_file or not wearing_file:
+            st.warning("请先上传两张图片。")
+        else:
+            if grouped:
+                scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season, env=env)
             else:
-                second = pick_second_ref(scene, wearing, boxes)
-            png = generate_one(client, jewelry, second, scene, quality=q)
-            if scene.get("var") == 0 and scene.get("group") is not None:
-                group_base[scene["group"]] = png
-            results.append((scene["name"], png))
-            with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:
-                fp.write(png)
-            with cols[(len(results) - 1) % 3]:
-                st.image(png, caption=f"{scene['name']} · {q}", use_container_width=True)
-                st.download_button("下载这张", data=png, file_name=f"{scene['name']}.png",
-                                   mime="image/png", key=f"bsdl_{scene['name']}")
-        except Exception as e:
-            st.error(f"{scene['name']} 生成失败:{e}")
-    progress.progress(1.0, text="完成")
-    if results:
-        st.success(f"成功生成 {len(results)} 张。")
-        zip_download(results, "buyer_shows.zip")
+                scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)
+            qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
+            client = OpenAI(api_key=api_key)
+
+            jewelry = to_named_bytes(jewelry_file, "jewelry.png")
+            wearing = to_named_bytes(wearing_file, "wearing.png")
+            boxes = load_box_images()
+            if not boxes:
+                st.warning("未检测到盒子参考图(box_black / box_burgundy),首饰盒场景将按文字描述生成。")
+
+            run_dir = new_run_dir()
+            results, group_base = [], {}
+            progress = st.progress(0.0, text="准备中...")
+            preview = st.empty()
+            for i, scene in enumerate(scenes, 1):
+                q = qualities[i - 1]
+                progress.progress((i - 1) / len(scenes), text=f"生成第 {i}/{len(scenes)} 张({q})...")
+                try:
+                    if scene.get("ref") == "base":
+                        base_png = group_base.get(scene.get("group"))
+                        second = ("base.png", base_png) if base_png else wearing
+                    else:
+                        second = pick_second_ref(scene, wearing, boxes)
+                    png = generate_one(client, jewelry, second, scene, quality=q)
+                    if scene.get("var") == 0 and scene.get("group") is not None:
+                        group_base[scene["group"]] = png
+                    results.append((scene["name"], png))
+                    with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:
+                        fp.write(png)
+                    preview.image(png, caption=f"刚生成:{scene['name']} · {q}", width=260)
+                except Exception as e:
+                    st.error(f"{scene['name']} 生成失败:{e}")
+            progress.progress(1.0, text="完成")
+            preview.empty()
+            st.session_state["bs_results"] = results  # 存起来,点下载不丢
+
+    # 持久展示(从会话状态,点任意下载/刷新后都还在)
+    _render_results(st.session_state.get("bs_results"), "buyer_shows.zip", "bsdl")
+
+
+def _render_results(results, zip_name, key_prefix):
+    if not results:
+        return
+    st.success(f"成功生成 {len(results)} 张。")
+    cols = st.columns(3)
+    for idx, (name, png) in enumerate(results):
+        with cols[idx % 3]:
+            st.image(png, caption=name, use_container_width=True)
+            st.download_button("下载这张", data=png, file_name=f"{name}.png",
+                               mime="image/png", key=f"{key_prefix}_{name}")
+    zip_download(results, zip_name)
 
 
 # ===========================================================================
@@ -336,18 +347,27 @@ def render_ecommerce(api_key):
             try:
                 with st.spinner("正在生成数字模特(约 1 分钟)..."):
                     neck_png, hand_png, ear_png = generate_digital_model(OpenAI(api_key=api_key), shop)
-                trio = [("肩颈图", f"model_{k}.png", neck_png),
-                        ("手部图", f"model_{k}2.png", hand_png),
-                        ("耳朵图", f"model_{k}3.png", ear_png)]
-                mcols = st.columns(3)
-                for col, (label, fname, png) in zip(mcols, trio):
-                    with col:
-                        st.image(png, caption=f"{label} → 存为 {fname}", use_container_width=True)
-                        st.download_button(f"下载{label}", data=png, file_name=fname,
-                                           mime="image/png", key=f"ec_dl_{fname}")
-                st.info("满意就下载这三张,改成上面的文件名传到 GitHub 仓库;不满意可再点一次重新生成。")
+                # 存进会话状态,避免点下载触发重跑后图片丢失
+                st.session_state["dm_result"] = {"shop": shop,
+                                                 "imgs": (neck_png, hand_png, ear_png)}
             except Exception as e:
+                st.session_state.pop("dm_result", None)
                 st.error(f"生成失败:{e}")
+
+        # 从会话状态展示(刷新/下载后仍在,三张都能下载)
+        res = st.session_state.get("dm_result")
+        if res and res.get("shop") == shop:
+            neck_png, hand_png, ear_png = res["imgs"]
+            trio = [("肩颈图", f"model_{k}.png", neck_png),
+                    ("手部图", f"model_{k}2.png", hand_png),
+                    ("耳朵图", f"model_{k}3.png", ear_png)]
+            mcols = st.columns(3)
+            for col, (label, fname, png) in zip(mcols, trio):
+                with col:
+                    st.image(png, caption=f"{label} → 存为 {fname}", use_container_width=True)
+                    st.download_button(f"下载{label}", data=png, file_name=fname,
+                                       mime="image/png", key=f"ec_dl_{fname}")
+            st.info("满意就下载这三张,改成上面的文件名传到 GitHub 仓库;不满意可再点一次重新生成。")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -363,45 +383,42 @@ def render_ecommerce(api_key):
 
     st.caption("每款固定 6 张:3 模特图(不同角度) + 3 场景图(色调渐变 / 石材 / 道具)。")
 
-    if not st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run"):
-        return
-    if not prod_file:
-        st.warning("请先上传白底产品图。")
-        return
+    run = st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run")
 
-    client = OpenAI(api_key=api_key)
-    product = to_named_bytes(prod_file, "product.png")
-    # 优先用临时上传(单张),否则按首饰类型从该店数字模特里挑合适的参考
-    if model_file:
-        model_refs = [to_named_bytes(model_file, "model.png")]
-    else:
-        model_refs = select_model_refs(shop_models, jtype)
-    jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs))
+    if run:
+        if not prod_file:
+            st.warning("请先上传白底产品图。")
+        else:
+            client = OpenAI(api_key=api_key)
+            product = to_named_bytes(prod_file, "product.png")
+            # 优先用临时上传(单张),否则按首饰类型从该店数字模特里挑合适的参考
+            if model_file:
+                model_refs = [to_named_bytes(model_file, "model.png")]
+            else:
+                model_refs = select_model_refs(shop_models, jtype)
+            jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs))
 
-    run_dir = new_run_dir()
-    results = []
-    progress = st.progress(0.0, text="准备中...")
-    st.subheader("生成结果(实时更新)")
-    cols = st.columns(3)
-    for i, job in enumerate(jobs, 1):
-        progress.progress((i - 1) / len(jobs), text=f"生成第 {i}/{len(jobs)} 张 · {job['name']}...")
-        try:
-            seconds = model_refs if job["use_model_ref"] else []
-            png = generate_ecom(client, product, seconds, job["prompt"])
-            name = f"{shop}_{job['name']}"
-            results.append((name, png))
-            with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
-                fp.write(png)
-            with cols[(len(results) - 1) % 3]:
-                st.image(png, caption=name, use_container_width=True)
-                st.download_button("下载这张", data=png, file_name=f"{name}.png",
-                                   mime="image/png", key=f"ecdl_{name}")
-        except Exception as e:
-            st.error(f"{job['name']} 生成失败:{e}")
-    progress.progress(1.0, text="完成")
-    if results:
-        st.success(f"成功生成 {len(results)} 张。")
-        zip_download(results, f"{shop}_电商图.zip")
+            run_dir = new_run_dir()
+            results = []
+            progress = st.progress(0.0, text="准备中...")
+            preview = st.empty()
+            for i, job in enumerate(jobs, 1):
+                progress.progress((i - 1) / len(jobs), text=f"生成第 {i}/{len(jobs)} 张 · {job['name']}...")
+                try:
+                    seconds = model_refs if job["use_model_ref"] else []
+                    png = generate_ecom(client, product, seconds, job["prompt"])
+                    name = f"{shop}_{job['name']}"
+                    results.append((name, png))
+                    with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
+                        fp.write(png)
+                    preview.image(png, caption=f"刚生成:{name}", width=260)
+                except Exception as e:
+                    st.error(f"{job['name']} 生成失败:{e}")
+            progress.progress(1.0, text="完成")
+            preview.empty()
+            st.session_state["ec_results"] = results
+
+    _render_results(st.session_state.get("ec_results"), f"{shop}_电商图.zip", "ecdl")
 
 
 # ===========================================================================
