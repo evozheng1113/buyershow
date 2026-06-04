@@ -34,6 +34,7 @@ from buyer_show import (
     QUALITY,
     JEWELRY_TYPES,
     build_scene_pool,
+    build_grouped_scenes,
 )
 
 st.set_page_config(page_title="首饰买家秀生成器", page_icon="💍", layout="wide")
@@ -183,7 +184,16 @@ with scol1:
 with scol2:
     env = st.selectbox("场景环境", options=["不限", "室内", "户外"], index=0)
 
-st.caption("每个款式固定生成 18 张:真人佩戴 10 张 + 手拿 4 张 + 首饰盒/静物 4 张,全部不露脸。")
+mode = st.radio(
+    "生成模式",
+    options=["6场景(每场景3张·同一买家)", "无要求(18张各不相同)"],
+    index=0, horizontal=True,
+)
+GROUPED = mode.startswith("6场景")
+if GROUPED:
+    st.caption("6 场景 × 每场景 3 张 = 18 张:4 真人佩戴 + 1 手拿 + 1 首饰盒;每组 3 张是同一买家/同一场景的不同角度。")
+else:
+    st.caption("18 张各不相同:真人佩戴 10 + 手拿 4 + 首饰盒/静物 4,全部不露脸。")
 
 qcol1, qcol2 = st.columns(2)
 with qcol1:
@@ -199,7 +209,10 @@ if run:
         st.warning("请先上传两张图片。")
         st.stop()
 
-    scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)  # 固定 18 张
+    if GROUPED:
+        scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season, env=env)
+    else:
+        scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)
     qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
     client = OpenAI(api_key=api_key)
 
@@ -216,6 +229,7 @@ if run:
     st.info(f"📁 本批图片会自动保存到:{run_dir}")
 
     results = []  # (name, png_bytes)
+    group_base = {}  # 分组模式下:每组基准图的 bytes
     progress = st.progress(0.0, text="准备中...")
 
     # 边生成边显示:每出一张立刻渲染,不用等全部跑完
@@ -225,8 +239,16 @@ if run:
         q = qualities[i - 1]
         progress.progress((i - 1) / len(scenes), text=f"生成第 {i}/{len(scenes)} 张({q})...")
         try:
-            second = pick_second_ref(scene, wearing, boxes)
+            if scene.get("ref") == "base":
+                # 同组变体:参考本组基准图,保持同一买家/场景
+                base_png = group_base.get(scene.get("group"))
+                second = ("base.png", base_png) if base_png else wearing
+            else:
+                second = pick_second_ref(scene, wearing, boxes)
             png = generate_one(client, jewelry, second, scene, quality=q)
+            # 分组模式:记录每组基准图(第 1 张)供后两张参考
+            if scene.get("var") == 0 and scene.get("group") is not None:
+                group_base[scene["group"]] = png
             results.append((scene["name"], png))
             # 立刻写盘保存
             with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:

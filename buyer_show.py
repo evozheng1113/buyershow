@@ -215,6 +215,53 @@ def build_scene_pool(n=None, rng=None, jewelry_type: str = "自动判断",
     return scenes
 
 
+# ---------------------------------------------------------------------------
+# 「6 场景 × 每场景 3 张」模式:每组 3 张是同一个买家、同一个场景,只换角度。
+# 第 1 张为基准,第 2、3 张把基准图当参考(ref='base'),保持人物/穿着/背景一致。
+# 6 组 = 4 真人佩戴 + 1 手拿 + 1 首饰盒(共 18 张)。
+# ---------------------------------------------------------------------------
+VAR_PERSON = ("【同组三连·必须保持一致】本张要和第二张参考图里【同一个人、同样的穿着、发型、妆容、"
+              "同样的场景和背景】,只改变拍摄角度/远近/构图:{hint}。首饰仍严格按第一张参考图(白底图),"
+              "不露脸、最多半脸。")
+VAR_BOX = ("【同组三连·必须保持一致】本张要和第二张参考图里【同一个首饰盒、同样的摆放和场景背景】,"
+           "只换一个拍摄角度/远近:{hint}。首饰仍严格按第一张参考图。")
+_VAR_HINTS_PERSON = ["拉近成佩戴部位的特写", "稍远一点、带一点环境的侧面角度"]
+_VAR_HINTS_BOX = ["更近的俯拍特写", "稍微换个侧面的角度"]
+
+
+def build_grouped_scenes(jewelry_type: str = "自动判断", season: str = "不限", env: str = "不限"):
+    """6 场景 × 3 张 = 18 张。返回的场景带 group / var / ref 字段供网页串联生成。"""
+    directive = JEWELRY_TYPES.get(jewelry_type, JEWELRY_TYPES["自动判断"])
+    season_note = SEASON.get(season, "")
+    sp = (season_note + " ") if season_note else ""
+
+    worn = _worn_scenes(env)
+    # 6 个基准场景:(kind, ref0, base_body)
+    bases = [("worn", "wearing", WORN_TPL.format(body=sp + b)) for b in worn[:4]]
+    bases.append(("held", "wearing", HELD_TPL.format(body=sp + HELD_FIXED[0])))
+    bases.append(("box", "box_black", BOX_TPL.format(body=BOX_FIXED[0][1])))
+
+    tpl = {"worn": WORN_TPL, "held": HELD_TPL, "box": BOX_TPL}
+    scenes = []
+    idx = 0
+    for g, (kind, ref0, base_body) in enumerate(bases):
+        # 第 1 张:基准
+        idx += 1
+        s = _scene(idx, kind, ref0, directive, base_body)
+        s["group"], s["var"] = g, 0
+        scenes.append(s)
+        # 第 2、3 张:参考基准图,只换角度
+        hints = _VAR_HINTS_BOX if kind == "box" else _VAR_HINTS_PERSON
+        note = VAR_BOX if kind == "box" else VAR_PERSON
+        for v, hint in enumerate(hints, start=1):
+            idx += 1
+            body = tpl[kind].format(body=note.format(hint=hint))
+            s = _scene(idx, kind, "base", directive, body)
+            s["group"], s["var"] = g, v
+            scenes.append(s)
+    return scenes
+
+
 def to_image_file(path: str):
     """打开图片文件,返回可传给 API 的文件对象。"""
     p = Path(path)
