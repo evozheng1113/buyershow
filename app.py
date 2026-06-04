@@ -155,21 +155,38 @@ def assign_qualities(scenes, n_high, low_tier):
 # 电商精修图:生成(高级棚拍,不拼买家秀铁律)
 # ===========================================================================
 def load_shop_models(shop):
-    """按店铺自动加载专属数字模特参考图,最多两张:model_<key> 和 model_<key>2。
-    返回 [(name, bytes), ...](可能为空)。"""
+    """按店铺加载专属数字模特三张参考图,返回 {role:(name,bytes)}。
+    model_<key>=脖子 / model_<key>2=手 / model_<key>3=耳朵。"""
     key = SHOP_KEYS.get(shop)
-    refs = []
+    out = {}
     if not key:
-        return refs
+        return out
     here = os.path.dirname(os.path.abspath(__file__))
-    for stem in (f"model_{key}", f"model_{key}2"):
+    roles = {"neck": f"model_{key}", "hand": f"model_{key}2", "ear": f"model_{key}3"}
+    for role, stem in roles.items():
         for ext in _IMG_EXTS:
             path = os.path.join(here, stem + ext)
             if os.path.exists(path):
                 with open(path, "rb") as f:
-                    refs.append((stem + ext, f.read()))
+                    out[role] = (stem + ext, f.read())
                 break
-    return refs
+    return out
+
+
+def select_model_refs(models, jtype):
+    """按首饰类型挑该用的模特参考:项链→脖子、耳饰→耳朵+脖子、戒指/手链→手、自动→全部。"""
+    if not models:
+        return []
+    def pick(keys):
+        got = [models[k] for k in keys if k in models]
+        return got or list(models.values())
+    if jtype == "项链":
+        return pick(["neck"])
+    if jtype in ("耳饰", "耳钉/耳环"):
+        return pick(["ear", "neck"])
+    if jtype in ("戒指", "手链", "手镯"):
+        return pick(["hand"])
+    return list(models.values())  # 自动判断:全给
 
 
 def generate_ecom(client, product, seconds, prompt, quality=ECOM_QUALITY):
@@ -183,14 +200,19 @@ def generate_ecom(client, product, seconds, prompt, quality=ECOM_QUALITY):
 
 
 def generate_digital_model(client, shop):
-    """为某店铺生成数字模特两张参考图:① 肩颈锁骨(文生图) ② 手部(参考①保持同一人)。"""
-    neck_p, hand_p = digital_model_prompts(shop)
+    """为店铺生成数字模特三张参考图:① 肩颈(文生图) ② 手部 ③ 侧脸耳朵(均参考①保持同一人)。"""
+    neck_p, hand_p, ear_p = digital_model_prompts(shop)
     r1 = client.images.generate(model=MODEL, prompt=neck_p, size=ECOM_SIZE, quality=ECOM_QUALITY, n=1)
     neck_png = base64.b64decode(r1.data[0].b64_json)
-    r2 = client.images.edit(model=MODEL, image=[("neck.png", io.BytesIO(neck_png))],
-                            prompt=hand_p, size=ECOM_SIZE, quality=ECOM_QUALITY, n=1)
-    hand_png = base64.b64decode(r2.data[0].b64_json)
-    return neck_png, hand_png
+
+    def edit_from_neck(prompt):
+        r = client.images.edit(model=MODEL, image=[("neck.png", io.BytesIO(neck_png))],
+                               prompt=prompt, size=ECOM_SIZE, quality=ECOM_QUALITY, n=1)
+        return base64.b64decode(r.data[0].b64_json)
+
+    hand_png = edit_from_neck(hand_p)
+    ear_png = edit_from_neck(ear_p)
+    return neck_png, hand_png, ear_png
 
 
 # ===========================================================================
@@ -297,33 +319,33 @@ def render_ecommerce(api_key):
                              options=["项链", "戒指", "手链", "手镯", "耳饰", "自动判断"],
                              index=0, key="ec_type")
 
-    # 该店铺的专属数字模特(自动从仓库加载,最多两张;也允许临时上传覆盖)
+    # 该店铺的专属数字模特(自动从仓库加载脖子/手/耳三张;也允许临时上传覆盖)
     shop_models = load_shop_models(shop)
+    k = SHOP_KEYS[shop]
     if shop_models:
-        st.success(f"已自动加载【{shop}】的专属数字模特(共 {len(shop_models)} 张参考)。")
+        st.success(f"已自动加载【{shop}】的专属数字模特(脖子/手/耳 共 {len(shop_models)} 张参考)。")
     else:
-        st.info(f"未检测到【{shop}】的专属数字模特(model_{SHOP_KEYS[shop]} / model_{SHOP_KEYS[shop]}2)。"
+        st.info(f"未检测到【{shop}】的专属数字模特(model_{k} / model_{k}2 / model_{k}3)。"
                 "可用下面的按钮生成,或临时上传一张。")
 
-    # 一键生成该店数字模特(脖子图 + 手图),下载后命名 model_X / model_X2 传到仓库即固定
-    with st.expander("🧑‍🎨 为本店生成数字模特(脖子图 + 手图)"):
-        st.caption(f"按【{shop}】的肤色/气质生成一个虚拟模特(无首饰、不露脸)。"
-                   f"下载后改名为 model_{SHOP_KEYS[shop]} 和 model_{SHOP_KEYS[shop]}2,传到仓库即长期固定使用。")
-        if st.button("生成数字模特(2 张)", key="ec_gen_model"):
+    # 一键生成该店数字模特(脖子图 + 手图 + 耳朵图),下载后命名传到仓库即固定
+    with st.expander("🧑‍🎨 为本店生成数字模特(脖子图 + 手图 + 耳朵图)"):
+        st.caption(f"按【{shop}】的肤色/气质生成同一个虚拟模特(无首饰、不露脸)。"
+                   f"下载后分别改名为 model_{k} / model_{k}2 / model_{k}3,传到仓库即长期固定使用。")
+        if st.button("生成数字模特(3 张)", key="ec_gen_model"):
             try:
-                with st.spinner("正在生成数字模特..."):
-                    neck_png, hand_png = generate_digital_model(OpenAI(api_key=api_key), shop)
-                k = SHOP_KEYS[shop]
-                mc1, mc2 = st.columns(2)
-                with mc1:
-                    st.image(neck_png, caption=f"肩颈图 → 存为 model_{k}.png", use_container_width=True)
-                    st.download_button("下载肩颈图", data=neck_png, file_name=f"model_{k}.png",
-                                       mime="image/png", key="ec_dl_neck")
-                with mc2:
-                    st.image(hand_png, caption=f"手部图 → 存为 model_{k}2.png", use_container_width=True)
-                    st.download_button("下载手部图", data=hand_png, file_name=f"model_{k}2.png",
-                                       mime="image/png", key="ec_dl_hand")
-                st.info("满意就下载这两张,改成上面的文件名传到 GitHub 仓库;不满意可再点一次重新生成。")
+                with st.spinner("正在生成数字模特(约 1 分钟)..."):
+                    neck_png, hand_png, ear_png = generate_digital_model(OpenAI(api_key=api_key), shop)
+                trio = [("肩颈图", f"model_{k}.png", neck_png),
+                        ("手部图", f"model_{k}2.png", hand_png),
+                        ("耳朵图", f"model_{k}3.png", ear_png)]
+                mcols = st.columns(3)
+                for col, (label, fname, png) in zip(mcols, trio):
+                    with col:
+                        st.image(png, caption=f"{label} → 存为 {fname}", use_container_width=True)
+                        st.download_button(f"下载{label}", data=png, file_name=fname,
+                                           mime="image/png", key=f"ec_dl_{fname}")
+                st.info("满意就下载这三张,改成上面的文件名传到 GitHub 仓库;不满意可再点一次重新生成。")
             except Exception as e:
                 st.error(f"生成失败:{e}")
 
@@ -349,8 +371,11 @@ def render_ecommerce(api_key):
 
     client = OpenAI(api_key=api_key)
     product = to_named_bytes(prod_file, "product.png")
-    # 优先用临时上传(单张),否则用该店铺的专属数字模特(可两张)
-    model_refs = [to_named_bytes(model_file, "model.png")] if model_file else shop_models
+    # 优先用临时上传(单张),否则按首饰类型从该店数字模特里挑合适的参考
+    if model_file:
+        model_refs = [to_named_bytes(model_file, "model.png")]
+    else:
+        model_refs = select_model_refs(shop_models, jtype)
     jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs))
 
     run_dir = new_run_dir()
