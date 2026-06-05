@@ -424,11 +424,11 @@ def render_ecommerce(api_key):
     mcol1, mcol2 = st.columns(2)
     with mcol1:
         model_mode = st.radio("模特图模式",
-                              options=["常规整体构图(推荐·稳定)", "局部特写+智能扩图(实验·可能变形)"],
+                              options=["局部特写+扩图(推荐·首饰更清晰)", "常规整体构图"],
                               index=0, key="ec_mmode")
         tight = model_mode.startswith("局部")
     with mcol2:
-        ex_factor = st.selectbox("扩图倍数(仅局部模式,越小首饰越大)", options=["1.3 倍", "1.2 倍", "1.5 倍"],
+        ex_factor = st.selectbox("扩图倍数(仅局部模式)", options=["2.0 倍", "1.6 倍", "1.3 倍"],
                                  index=0, key="ec_factor")
     factor = float(ex_factor.split()[0])
 
