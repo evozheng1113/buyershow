@@ -423,7 +423,7 @@ def render_ecommerce(api_key):
                               index=0, key="ec_mmode")
         tight = model_mode.startswith("局部")
     with mcol2:
-        ex_factor = st.selectbox("扩图倍数(仅局部模式)", options=["1.8 倍", "1.6 倍", "2.0 倍"],
+        ex_factor = st.selectbox("扩图倍数(仅局部模式,越小首饰越大)", options=["1.3 倍", "1.2 倍", "1.5 倍"],
                                  index=0, key="ec_factor")
     factor = float(ex_factor.split()[0])
 
