@@ -278,11 +278,15 @@ def render_buyer_show(api_key):
     with scol2:
         env = st.selectbox("场景环境", options=["不限", "室内", "户外"], index=0, key="bs_env")
 
-    mode = st.radio("生成模式", options=["6场景(每场景3张·同一买家)", "无要求(18张各不相同)"],
+    mode = st.radio("生成模式", options=["分场景(每场景3张·同一买家)", "无要求(18张各不相同)"],
                     index=0, horizontal=True, key="bs_mode")
-    grouped = mode.startswith("6场景")
-    st.caption("6 场景 × 每场景 3 张 = 18 张:4 真人佩戴 + 1 手拿 + 1 首饰盒。" if grouped
-               else "18 张各不相同:真人佩戴 10 + 手拿 4 + 首饰盒/静物 4,全部不露脸。")
+    grouped = mode.startswith("分场景")
+    if grouped:
+        n_scenes = st.slider("场景数量(每个场景出 3 张)", 1, 6, 6, key="bs_nscenes")
+        st.caption(f"{n_scenes} 个场景 × 每场景 3 张 = {n_scenes*3} 张;每组 3 张是同一买家/同一场景的不同角度。")
+    else:
+        n_scenes = 6
+        st.caption("18 张各不相同:真人佩戴 10 + 手拿 4 + 首饰盒/静物 4,全部不露脸。")
 
     qcol1, qcol2 = st.columns(2)
     with qcol1:
@@ -297,7 +301,8 @@ def render_buyer_show(api_key):
             st.warning("请先上传两张图片。")
         else:
             if grouped:
-                scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season, env=env)
+                scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season,
+                                              env=env, n_scenes=n_scenes)
             else:
                 scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)
             qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
@@ -419,7 +424,7 @@ def render_ecommerce(api_key):
     mcol1, mcol2 = st.columns(2)
     with mcol1:
         model_mode = st.radio("模特图模式",
-                              options=["局部特写+智能扩图(首饰更清晰·推荐)", "常规整体构图"],
+                              options=["常规整体构图(推荐·稳定)", "局部特写+智能扩图(实验·可能变形)"],
                               index=0, key="ec_mmode")
         tight = model_mode.startswith("局部")
     with mcol2:
