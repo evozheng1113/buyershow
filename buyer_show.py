@@ -229,17 +229,20 @@ _VAR_HINTS_PERSON = ["拉近成佩戴部位的特写", "稍远一点、带一点
 _VAR_HINTS_BOX = ["更近的俯拍特写", "稍微换个侧面的角度"]
 
 
-def build_grouped_scenes(jewelry_type: str = "自动判断", season: str = "不限", env: str = "不限"):
-    """6 场景 × 3 张 = 18 张。返回的场景带 group / var / ref 字段供网页串联生成。"""
+def build_grouped_scenes(jewelry_type: str = "自动判断", season: str = "不限",
+                         env: str = "不限", n_scenes: int = 6):
+    """n_scenes 个场景 × 每场景 3 张。n_scenes 取 1~6;每个场景 3 张是同一买家同场景不同角度。"""
     directive = JEWELRY_TYPES.get(jewelry_type, JEWELRY_TYPES["自动判断"])
     season_note = SEASON.get(season, "")
     sp = (season_note + " ") if season_note else ""
 
     worn = _worn_scenes(env)
-    # 6 个基准场景:(kind, ref0, base_body)
+    # 最多 6 个基准场景:4 真人佩戴 + 1 手拿 + 1 首饰盒
     bases = [("worn", "wearing", WORN_TPL.format(body=sp + b)) for b in worn[:4]]
     bases.append(("held", "wearing", HELD_TPL.format(body=sp + HELD_FIXED[0])))
     bases.append(("box", "box_black", BOX_TPL.format(body=BOX_FIXED[0][1])))
+    n = max(1, min(6, n_scenes))
+    bases = bases[:n]
 
     tpl = {"worn": WORN_TPL, "held": HELD_TPL, "box": BOX_TPL}
     scenes = []
