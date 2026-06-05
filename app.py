@@ -189,14 +189,25 @@ def select_model_refs(models, jtype):
     return list(models.values())  # 自动判断:全给
 
 
-def generate_ecom(client, product, seconds, prompt, quality=ECOM_QUALITY):
-    """seconds 是第二参考图列表(0~2 张):产品图在前,模特参考图随后。"""
-    images = [(product[0], io.BytesIO(product[1]))]
-    for s in (seconds or []):
-        images.append((s[0], io.BytesIO(s[1])))
-    result = client.images.edit(model=MODEL, image=images, prompt=prompt,
+def generate_ecom(client, ref_images, prompt, quality=ECOM_QUALITY):
+    """ref_images 是参考图列表 [(name,bytes), ...](最多 16 张):产品整套图 +(模特图)。"""
+    imgs = [(n, io.BytesIO(b)) for (n, b) in ref_images[:16]]
+    result = client.images.edit(model=MODEL, image=imgs, prompt=prompt,
                                 size=ECOM_SIZE, quality=quality, n=1)
     return base64.b64decode(result.data[0].b64_json)
+
+
+def upscale_png(png_bytes, scale):
+    """把 PNG 放大 scale 倍(Lanczos),用于提高输出分辨率。scale<=1 原样返回。"""
+    if scale <= 1:
+        return png_bytes
+    from PIL import Image
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    w, h = im.size
+    im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
 
 
 def generate_digital_model(client, shop):
@@ -369,29 +380,30 @@ def render_ecommerce(api_key):
                                        mime="image/png", key=f"ec_dl_{fname}")
             st.info("满意就下载这三张,改成上面的文件名传到 GitHub 仓库;不满意可再点一次重新生成。")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        prod_file = st.file_uploader("① 白底产品图(必传,决定珠宝款式)",
-                                     type=["png", "jpg", "jpeg", "webp"], key="ec_prod")
-        if prod_file:
-            st.image(prod_file, caption="产品真值图", use_container_width=True)
-    with c2:
-        model_file = st.file_uploader("② 临时模特参考图(可选,覆盖本店默认模特)",
-                                      type=["png", "jpg", "jpeg", "webp"], key="ec_model")
-        if model_file:
-            st.image(model_file, caption="临时模特参考(本次覆盖)", use_container_width=True)
+    prod_files = st.file_uploader(
+        "① 该款产品的整套参考图(可多张:不同角度的白底图 / 场景图,越多越准越多样)",
+        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True, key="ec_prod")
+    if prod_files:
+        st.image([f for f in prod_files][:8], width=110)
+    model_file = st.file_uploader("② 临时模特参考图(可选,覆盖本店默认模特)",
+                                  type=["png", "jpg", "jpeg", "webp"], key="ec_model")
 
-    st.caption("每款固定 6 张:3 模特图(不同角度) + 3 场景图(色调渐变 / 石材 / 道具)。")
+    ocol1, ocol2 = st.columns(2)
+    with ocol1:
+        out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
+                                 index=0, key="ec_scale")
+    scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
+
+    st.caption("每款固定 6 张:3 模特图(正/侧/特写) + 3 场景图(平躺/立起/微距)。整套参考图喂得越全,角度越多样、还原越准。")
 
     run = st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run")
 
     if run:
-        if not prod_file:
-            st.warning("请先上传白底产品图。")
+        if not prod_files:
+            st.warning("请先上传至少一张产品参考图。")
         else:
             client = OpenAI(api_key=api_key)
-            product = to_named_bytes(prod_file, "product.png")
-            # 优先用临时上传(单张),否则按首饰类型从该店数字模特里挑合适的参考
+            product_refs = [to_named_bytes(f, f"product_{i}.png") for i, f in enumerate(prod_files)]
             if model_file:
                 model_refs = [to_named_bytes(model_file, "model.png")]
             else:
@@ -405,8 +417,13 @@ def render_ecommerce(api_key):
             for i, job in enumerate(jobs, 1):
                 progress.progress((i - 1) / len(jobs), text=f"生成第 {i}/{len(jobs)} 张 · {job['name']}...")
                 try:
-                    seconds = model_refs if job["use_model_ref"] else []
-                    png = generate_ecom(client, product, seconds, job["prompt"])
+                    # 模特图:整套产品图 + 模特参考图;场景图:只用整套产品图
+                    if job["use_model_ref"]:
+                        refs = product_refs[:13] + model_refs
+                    else:
+                        refs = product_refs
+                    png = generate_ecom(client, refs, job["prompt"])
+                    png = upscale_png(png, scale)
                     name = f"{shop}_{job['name']}"
                     results.append((name, png))
                     with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
