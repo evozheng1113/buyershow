@@ -433,12 +433,8 @@ def render_ecommerce(api_key):
                                  index=0, key="ec_factor")
     factor = float(ex_factor.split()[0])
 
-    ocol1, ocol2 = st.columns(2)
-    with ocol1:
-        out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
-                                 index=0, key="ec_scale")
-    with ocol2:
-        keep_original = st.checkbox("同时保留放大前原图(便于对比)", value=False, key="ec_keep_orig")
+    out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
+                             index=0, key="ec_scale")
     scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
 
     st.caption("每款固定 6 张:3 模特图(正/侧/特写) + 3 场景图(平躺/立起/微距)。整套参考图喂得越全,角度越多样、还原越准。")
@@ -478,12 +474,6 @@ def render_ecommerce(api_key):
                     results.append((name, png))
                     with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
                         fp.write(png)
-                    # 对比模式:同时保留放大前原图
-                    if keep_original and scale > 1:
-                        oname = f"{name}_原图1024"
-                        results.append((oname, raw_png))
-                        with open(os.path.join(run_dir, f"{oname}.png"), "wb") as fp:
-                            fp.write(raw_png)
                     preview.image(png, caption=f"刚生成:{name}", width=260)
                 except Exception as e:
                     st.error(f"{job['name']} 生成失败:{e}")
@@ -492,6 +482,41 @@ def render_ecommerce(api_key):
             st.session_state["ec_results"] = results
 
     _render_results(st.session_state.get("ec_results"), f"{shop}_电商图.zip", "ecdl")
+
+
+# ===========================================================================
+# 标签 3:图片放大(纯本地放大,不调用 API、不耗额度)
+# ===========================================================================
+def render_upscale():
+    st.caption("上传任意图片,选择放大倍数,直接输出放大版(本地高质量放大,不生成、不消耗额度)。")
+    files = st.file_uploader("上传要放大的图片(可多张)",
+                             type=["png", "jpg", "jpeg", "webp"],
+                             accept_multiple_files=True, key="up_files")
+    up_scale = st.selectbox("放大倍数", options=["2 倍", "3 倍", "4 倍", "1.5 倍"], index=0, key="up_scale")
+    factor = float(up_scale.split()[0])
+
+    if not st.button("🔍 开始放大", type="primary", use_container_width=True, key="up_run"):
+        # 持久展示上次结果
+        _render_results(st.session_state.get("up_results"), "放大图片.zip", "updl")
+        return
+    if not files:
+        st.warning("请先上传图片。")
+        return
+
+    results = []
+    progress = st.progress(0.0, text="放大中...")
+    for i, f in enumerate(files, 1):
+        progress.progress((i - 1) / len(files), text=f"放大第 {i}/{len(files)} 张...")
+        try:
+            data = f.getvalue()
+            big = upscale_png(data, factor)
+            base = os.path.splitext(getattr(f, "name", f"image_{i}"))[0]
+            results.append((f"{base}_放大{up_scale.split()[0]}x", big))
+        except Exception as e:
+            st.error(f"{getattr(f,'name','图片')} 放大失败:{e}")
+    progress.progress(1.0, text="完成")
+    st.session_state["up_results"] = results
+    _render_results(results, "放大图片.zip", "updl")
 
 
 # ===========================================================================
@@ -505,8 +530,11 @@ if not api_key:
     st.error("服务器未配置 OPENAI_API_KEY,请联系管理员。")
     st.stop()
 
-buyer_tab, ecom_tab = st.tabs(["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)"])
+buyer_tab, ecom_tab, up_tab = st.tabs(
+    ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "🔍 图片放大"])
 with buyer_tab:
     render_buyer_show(api_key)
 with ecom_tab:
     render_ecommerce(api_key)
+with up_tab:
+    render_upscale()
