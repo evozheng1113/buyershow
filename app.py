@@ -395,6 +395,8 @@ def render_ecommerce(api_key):
     with ocol1:
         out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
                                  index=0, key="ec_scale")
+    with ocol2:
+        keep_original = st.checkbox("同时保留放大前原图(便于对比)", value=False, key="ec_keep_orig")
     scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
 
     st.caption("每款固定 6 张:3 模特图(正/侧/特写) + 3 场景图(平躺/立起/微距)。整套参考图喂得越全,角度越多样、还原越准。")
@@ -425,12 +427,18 @@ def render_ecommerce(api_key):
                         refs = product_refs[:13] + model_refs
                     else:
                         refs = product_refs
-                    png = generate_ecom(client, refs, job["prompt"])
-                    png = upscale_png(png, scale)
+                    raw_png = generate_ecom(client, refs, job["prompt"])
+                    png = upscale_png(raw_png, scale)
                     name = f"{shop}_{job['name']}"
                     results.append((name, png))
                     with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
                         fp.write(png)
+                    # 对比模式:同时保留放大前原图
+                    if keep_original and scale > 1:
+                        oname = f"{name}_原图1024"
+                        results.append((oname, raw_png))
+                        with open(os.path.join(run_dir, f"{oname}.png"), "wb") as fp:
+                            fp.write(raw_png)
                     preview.image(png, caption=f"刚生成:{name}", width=260)
                 except Exception as e:
                     st.error(f"{job['name']} 生成失败:{e}")
