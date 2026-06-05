@@ -220,11 +220,12 @@ def outpaint_expand(client, png_bytes, factor):
         subj = Image.open(io.BytesIO(png_bytes)).convert("RGB")
         sw, sh = max(1, int(W / factor)), max(1, int(H / factor))
         subj = subj.resize((sw, sh), Image.LANCZOS)
-        ox, oy = (W - sw) // 2, (H - sh) // 2
+        # 主体钉在画面【顶部】居中:扩图只往下方与两侧补,绝不往上补脸
+        ox, oy = (W - sw) // 2, 0
         canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         canvas.paste(subj.convert("RGBA"), (ox, oy))
-        mask = Image.new("RGBA", (W, H), (0, 0, 0, 0))           # 透明=待填充(四周)
-        mask.paste(Image.new("RGBA", (sw, sh), (255, 255, 255, 255)), (ox, oy))  # 不透明=保留(中心)
+        mask = Image.new("RGBA", (W, H), (0, 0, 0, 0))           # 透明=待填充(下方/两侧)
+        mask.paste(Image.new("RGBA", (sw, sh), (255, 255, 255, 255)), (ox, oy))  # 不透明=保留(顶部主体)
         cbuf = io.BytesIO(); canvas.save(cbuf, "PNG"); cbuf.name = "canvas.png"; cbuf.seek(0)
         mbuf = io.BytesIO(); mask.save(mbuf, "PNG"); mbuf.name = "mask.png"; mbuf.seek(0)
         result = client.images.edit(model=MODEL, image=cbuf, mask=mbuf,
