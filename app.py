@@ -385,8 +385,11 @@ def render_ecommerce(api_key):
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True, key="ec_prod")
     if prod_files:
         st.image([f for f in prod_files][:8], width=110)
-    model_file = st.file_uploader("② 临时模特参考图(可选,覆盖本店默认模特)",
-                                  type=["png", "jpg", "jpeg", "webp"], key="ec_model")
+    model_files = st.file_uploader("② 临时模特参考图(可选,可多张,覆盖本店默认模特)",
+                                   type=["png", "jpg", "jpeg", "webp"],
+                                   accept_multiple_files=True, key="ec_model")
+    if model_files:
+        st.image([f for f in model_files][:6], width=110)
 
     ocol1, ocol2 = st.columns(2)
     with ocol1:
@@ -404,8 +407,8 @@ def render_ecommerce(api_key):
         else:
             client = OpenAI(api_key=api_key)
             product_refs = [to_named_bytes(f, f"product_{i}.png") for i, f in enumerate(prod_files)]
-            if model_file:
-                model_refs = [to_named_bytes(model_file, "model.png")]
+            if model_files:
+                model_refs = [to_named_bytes(f, f"model_{i}.png") for i, f in enumerate(model_files)]
             else:
                 model_refs = select_model_refs(shop_models, jtype)
             jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs))
