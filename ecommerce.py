@@ -123,12 +123,33 @@ OUTPAINT_PROMPT = (
     "若原图没有露脸,扩图后必须依然不露脸(最多保留原图已有的下巴);"
     "无畸变、无新增杂物、不改动原有画面任何元素,画面过渡自然无痕。"
 )
-# 3 张场景图的差异化呈现(平躺俯拍 / 立起侧面 / 微距特写),参考客户棚拍:暖调极简、哑光道具
+# 场景图按"首饰类型"定呈现逻辑(参考客户实拍)
+# 戒指/耳饰:可立起,适合 平放 + 立起 + 微距
+SCENE_SETUPS_RIGID = [
+    "平放俯拍(顶视):珠宝正面朝上平放,构图简洁、留出干净负空间,柔和的接触阴影,呈现正面细节",
+    "立起或侧 45 度角:展示珠宝的侧面与厚度立体感,柔和定向光勾勒金属边缘高光,呈现侧边细节",
+    "微距特写:贴近拍摄,突出钻石火彩与金属镜面高光,背景柔焦虚化,呈现局部细节",
+]
+# 项链/吊坠/手链/手镯:链状,适合 平铺成弧/圈 + 吊坠微距 + 斜侧垂落
+SCENE_SETUPS_CHAIN = [
+    "平铺俯拍(顶视):链子在台面上自然摆成优雅的圆弧或圈形、整体平躺,完整展示款式全貌,留出干净负空间,柔和接触阴影",
+    "吊坠/扣头/钻饰的微距特写:贴近拍摄,突出火彩与镶嵌细节,背景柔焦虚化",
+    "斜侧角度:链子自然垂落或绕过极简道具,呈现一点立体层次与金属质感",
+]
+# 通用(自动判断时)
 SCENE_SETUPS = [
     "平铺俯拍(顶视平躺):珠宝正面朝上平放,构图简洁、留出干净负空间,柔和的接触阴影,呈现正面细节",
     "立起或侧 45 度角:展示珠宝的侧面与厚度立体感,柔和定向光勾勒金属边缘高光,呈现侧边细节",
     "微距特写角度:贴近拍摄,突出钻石火彩与金属镜面高光,背景柔焦虚化,呈现局部细节",
 ]
+
+
+def scene_setups_for(jewelry_type):
+    if jewelry_type in ("项链", "吊坠", "手链", "手镯"):
+        return SCENE_SETUPS_CHAIN
+    if jewelry_type in ("戒指", "耳饰", "耳钉/耳环"):
+        return SCENE_SETUPS_RIGID
+    return SCENE_SETUPS
 
 # 用户指定的批次提示词:3 张采用 3 种差异化展示方式、多角度呈现正/侧面细节
 MODEL_BATCH_NOTE = "(本款共 3 张模特图采用 3 种差异化产品展示方式,借助不同佩戴方位多角度呈现珠宝产品正面、侧边等方位的佩戴细节)"
@@ -212,26 +233,24 @@ def digital_model_prompts(shop):
     return neck, hand, ear
 
 
-def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, tight=False):
-    """返回该款产品的 6 个生成任务:3 模特图 + 3 场景图。
-    tight=True 时模特图用"局部特写",并标记 outpaint=True(网页据此扩图)。
-    每个任务:{name, kind, prompt, use_model_ref, outpaint}。"""
+def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, include="both"):
+    """返回生成任务。include: 'both' / 'model'(只模特) / 'scene'(只场景)。
+    模特图用局部特写(带上下文,不扩图);场景图按首饰类型定呈现。"""
     jobs = []
-    angles = TIGHT_ANGLES if tight else MODEL_ANGLES
-    for i, angle in enumerate(angles, 1):
-        jobs.append({
-            "name": f"模特图_{i}",
-            "kind": "model",
-            "prompt": _model_prompt(shop, jewelry_type, angle, has_model_ref, tight=tight),
-            "use_model_ref": has_model_ref,
-            "outpaint": tight,
-        })
-    for i, setup in enumerate(SCENE_SETUPS, 1):
-        jobs.append({
-            "name": f"场景图_{i}",
-            "kind": "scene",
-            "prompt": _scene_prompt(shop, setup),
-            "use_model_ref": False,
-            "outpaint": False,
-        })
+    if include in ("both", "model"):
+        for i, angle in enumerate(TIGHT_ANGLES, 1):
+            jobs.append({
+                "name": f"模特图_{i}",
+                "kind": "model",
+                "prompt": _model_prompt(shop, jewelry_type, angle, has_model_ref, tight=True),
+                "use_model_ref": has_model_ref,
+            })
+    if include in ("both", "scene"):
+        for i, setup in enumerate(scene_setups_for(jewelry_type), 1):
+            jobs.append({
+                "name": f"场景图_{i}",
+                "kind": "scene",
+                "prompt": _scene_prompt(shop, setup),
+                "use_model_ref": False,
+            })
     return jobs

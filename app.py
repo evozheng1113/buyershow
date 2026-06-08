@@ -34,7 +34,6 @@ from ecommerce import (
     SHOP_KEYS,
     ECOM_SIZE,
     ECOM_QUALITY,
-    OUTPAINT_PROMPT,
     build_ecommerce_jobs,
     digital_model_prompts,
 )
@@ -209,31 +208,6 @@ def upscale_png(png_bytes, scale):
     out = io.BytesIO()
     im.save(out, "PNG")
     return out.getvalue()
-
-
-def outpaint_expand(client, png_bytes, factor):
-    """局部特写 -> 扩图:把主体缩到 1/factor 居中放进 3:4 画布,只填充四周留白背景。
-    主体原样保留、绝对清晰。失败则返回原图。"""
-    from PIL import Image
-    try:
-        W, H = 1024, 1536
-        subj = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-        sw, sh = max(1, int(W / factor)), max(1, int(H / factor))
-        subj = subj.resize((sw, sh), Image.LANCZOS)
-        # 主体钉在画面【顶部】居中:扩图只往下方与两侧补,绝不往上补脸
-        ox, oy = (W - sw) // 2, 0
-        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        canvas.paste(subj.convert("RGBA"), (ox, oy))
-        mask = Image.new("RGBA", (W, H), (0, 0, 0, 0))           # 透明=待填充(下方/两侧)
-        mask.paste(Image.new("RGBA", (sw, sh), (255, 255, 255, 255)), (ox, oy))  # 不透明=保留(顶部主体)
-        cbuf = io.BytesIO(); canvas.save(cbuf, "PNG"); cbuf.name = "canvas.png"; cbuf.seek(0)
-        mbuf = io.BytesIO(); mask.save(mbuf, "PNG"); mbuf.name = "mask.png"; mbuf.seek(0)
-        result = client.images.edit(model=MODEL, image=cbuf, mask=mbuf,
-                                    prompt=OUTPAINT_PROMPT, size="1024x1536",
-                                    quality=ECOM_QUALITY, n=1)
-        return base64.b64decode(result.data[0].b64_json)
-    except Exception:
-        return png_bytes  # 扩图失败就用局部原图,不影响整体
 
 
 def generate_digital_model(client, shop):
@@ -422,22 +396,18 @@ def render_ecommerce(api_key):
     if model_files:
         st.image([f for f in model_files][:6], width=110)
 
-    mcol1, mcol2 = st.columns(2)
-    with mcol1:
-        model_mode = st.radio("模特图模式",
-                              options=["局部特写+扩图(推荐·首饰更清晰)", "常规整体构图"],
-                              index=0, key="ec_mmode")
-        tight = model_mode.startswith("局部")
-    with mcol2:
-        ex_factor = st.selectbox("扩图倍数(仅局部模式)", options=["2.0 倍", "1.6 倍", "1.3 倍"],
-                                 index=0, key="ec_factor")
-    factor = float(ex_factor.split()[0])
-
-    out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
-                             index=0, key="ec_scale")
+    gcol1, gcol2 = st.columns(2)
+    with gcol1:
+        gen_what = st.radio("生成内容(可只出一种,方便抽卡替换)",
+                            options=["模特图 + 场景图", "只出模特图", "只出场景图"],
+                            index=0, key="ec_what")
+        include = {"模特图 + 场景图": "both", "只出模特图": "model", "只出场景图": "scene"}[gen_what]
+    with gcol2:
+        out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
+                                 index=0, key="ec_scale")
     scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
 
-    st.caption("每款固定 6 张:3 模特图(正/侧/特写) + 3 场景图(平躺/立起/微距)。整套参考图喂得越全,角度越多样、还原越准。")
+    st.caption("模特图=局部特写(下巴/锁骨/手等,不露脸);场景图按首饰类型自动定呈现(链状平铺成弧、戒指立起/平放等)。整套参考图喂得越全越准。")
 
     run = st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run")
 
@@ -451,7 +421,7 @@ def render_ecommerce(api_key):
                 model_refs = [to_named_bytes(f, f"model_{i}.png") for i, f in enumerate(model_files)]
             else:
                 model_refs = select_model_refs(shop_models, jtype)
-            jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs), tight=tight)
+            jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs), include=include)
 
             run_dir = new_run_dir()
             results = []
@@ -466,9 +436,6 @@ def render_ecommerce(api_key):
                     else:
                         refs = product_refs
                     raw_png = generate_ecom(client, refs, job["prompt"])
-                    # 局部模特图:先扩图补四周留白(主体不变),再放大
-                    if job.get("outpaint"):
-                        raw_png = outpaint_expand(client, raw_png, factor)
                     png = upscale_png(raw_png, scale)
                     name = f"{shop}_{job['name']}"
                     results.append((name, png))
