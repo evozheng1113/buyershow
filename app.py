@@ -17,9 +17,14 @@ import zipfile
 import streamlit as st
 from openai import OpenAI
 
+# 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
+VERSION = "3.0"
+
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
 
+import buyer_show as _bs_mod
+import ecommerce as _ec_mod
 from buyer_show import (
     FIDELITY_RULES,
     MODEL,
@@ -89,6 +94,21 @@ def new_run_dir():
     d = os.path.join(OUTPUT_ROOT, datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def check_versions():
+    """三个文件版本必须一致;不一致 = 有文件没传齐,顶部红字报警。"""
+    versions = {
+        "app.py": VERSION,
+        "ecommerce.py": getattr(_ec_mod, "VERSION", "旧版未更新"),
+        "buyer_show.py": getattr(_bs_mod, "VERSION", "旧版未更新"),
+    }
+    detail = " | ".join(f"{k} = v{v}" for k, v in versions.items())
+    if len(set(versions.values())) != 1:
+        st.error(f"⚠️ 文件版本不一致,有文件没传齐!{detail}\n\n"
+                 "请把 app.py、ecommerce.py、buyer_show.py 三个文件一起传到 GitHub 覆盖,再 reboot。")
+    else:
+        st.caption(f"✅ 版本 v{VERSION} · 三个文件版本一致")
 
 
 def zip_download(results, fname):
@@ -290,7 +310,7 @@ def render_buyer_show(api_key):
                 st.warning("未检测到盒子参考图(box_black / box_burgundy),首饰盒场景将按文字描述生成。")
 
             run_dir = new_run_dir()
-            results, group_base = [], {}
+            results, group_base, items = [], {}, []
             progress = st.progress(0.0, text="准备中...")
             preview = st.empty()
             for i, scene in enumerate(scenes, 1):
@@ -306,6 +326,7 @@ def render_buyer_show(api_key):
                     if scene.get("var") == 0 and scene.get("group") is not None:
                         group_base[scene["group"]] = png
                     results.append((scene["name"], png))
+                    items.append({"scene": scene, "second": second, "q": q})
                     with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:
                         fp.write(png)
                     preview.image(png, caption=f"刚生成:{scene['name']} · {q}", width=260)
@@ -314,12 +335,40 @@ def render_buyer_show(api_key):
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["bs_results"] = results  # 存起来,点下载不丢
+            # 存每张图的生成参数,供"单张重出"抽卡用
+            st.session_state["bs_ctx"] = {"jewelry": jewelry, "items": items, "run_dir": run_dir}
 
-    # 持久展示(从会话状态,点任意下载/刷新后都还在)
-    _render_results(st.session_state.get("bs_results"), "buyer_shows.zip", "bsdl")
+    def _regen_bs(idx):
+        """只重出买家秀第 idx 张(单张计费),其余不动。"""
+        ctx = st.session_state.get("bs_ctx")
+        results = st.session_state.get("bs_results") or []
+        if not ctx or idx >= len(results) or idx >= len(ctx["items"]):
+            st.warning("这张图没有保存生成参数(旧批次),请重新生成一批后再抽卡。")
+            return
+        it = ctx["items"][idx]
+        name = results[idx][0]
+        try:
+            with st.spinner(f"正在重出 {name}(同场景重新抽一张)..."):
+                png = generate_one(OpenAI(api_key=api_key), ctx["jewelry"],
+                                   it["second"], it["scene"], quality=it["q"])
+            results[idx] = (name, png)
+            st.session_state["bs_results"] = results
+            try:
+                with open(os.path.join(ctx["run_dir"], f"{name}.png"), "wb") as fp:
+                    fp.write(png)
+            except Exception:
+                pass
+            st.rerun()
+        except Exception as e:
+            st.error(f"{name} 重出失败:{e}")
+
+    # 持久展示(从会话状态,点任意下载/刷新后都还在);每张可单独"重出"抽卡
+    _render_results(st.session_state.get("bs_results"), "buyer_shows.zip", "bsdl", regen=_regen_bs)
 
 
-def _render_results(results, zip_name, key_prefix):
+def _render_results(results, zip_name, key_prefix, regen=None):
+    """展示结果网格。regen 传一个 fn(idx) 时,每张图旁多一个"重出这张"按钮,
+    只重新生成该张(单张计费),替换原图,其余不动。"""
     if not results:
         return
     st.success(f"成功生成 {len(results)} 张。")
@@ -327,8 +376,18 @@ def _render_results(results, zip_name, key_prefix):
     for idx, (name, png) in enumerate(results):
         with cols[idx % 3]:
             st.image(png, caption=name, use_container_width=True)
-            st.download_button("下载这张", data=png, file_name=f"{name}.png",
-                               mime="image/png", key=f"{key_prefix}_{name}")
+            if regen is None:
+                st.download_button("下载这张", data=png, file_name=f"{name}.png",
+                                   mime="image/png", key=f"{key_prefix}_{idx}_{name}")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("下载这张", data=png, file_name=f"{name}.png",
+                                       mime="image/png", key=f"{key_prefix}_{idx}_{name}")
+                with c2:
+                    if st.button("🎲 重出这张", key=f"{key_prefix}_re_{idx}",
+                                 help="只重新生成这一张(单张计费),不满意可反复抽卡"):
+                        regen(idx)
     zip_download(results, zip_name)
 
 
@@ -447,8 +506,45 @@ def render_ecommerce(api_key):
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["ec_results"] = results
+            # 存每张图的生成参数,供"单张重出"抽卡用
+            st.session_state["ec_ctx"] = {
+                "scale": scale,
+                "run_dir": run_dir,
+                "jobs": {f"{shop}_{j['name']}": j for j in jobs},
+                "product_refs": product_refs,
+                "model_refs": model_refs,
+            }
 
-    _render_results(st.session_state.get("ec_results"), f"{shop}_电商图.zip", "ecdl")
+    def _regen_ec(idx):
+        """只重出电商图第 idx 张(单张计费),其余不动。"""
+        ctx = st.session_state.get("ec_ctx")
+        results = st.session_state.get("ec_results") or []
+        if not ctx or idx >= len(results):
+            st.warning("这张图没有保存生成参数(旧批次),请重新生成一批后再抽卡。")
+            return
+        name = results[idx][0]
+        job = ctx["jobs"].get(name)
+        if not job:
+            st.warning("这张图没有保存生成参数,请重新生成一批后再抽卡。")
+            return
+        try:
+            with st.spinner(f"正在重出 {name}(同参数重新抽一张)..."):
+                refs = (ctx["product_refs"][:13] + ctx["model_refs"]) if job["use_model_ref"] \
+                    else ctx["product_refs"]
+                raw_png = generate_ecom(OpenAI(api_key=api_key), refs, job["prompt"])
+                png = upscale_png(raw_png, ctx["scale"])
+            results[idx] = (name, png)
+            st.session_state["ec_results"] = results
+            try:
+                with open(os.path.join(ctx["run_dir"], f"{name}.png"), "wb") as fp:
+                    fp.write(png)
+            except Exception:
+                pass
+            st.rerun()
+        except Exception as e:
+            st.error(f"{name} 重出失败:{e}")
+
+    _render_results(st.session_state.get("ec_results"), f"{shop}_电商图.zip", "ecdl", regen=_regen_ec)
 
 
 # ===========================================================================
@@ -487,9 +583,47 @@ def render_upscale():
 
 
 # ===========================================================================
+# 标签 4:历史记录(找回以前生成的批次,不调用 API)
+# ===========================================================================
+def render_history():
+    st.caption("每次生成都会自动按批次存到服务器,在这里随时找回、下载。"
+               "注意:服务器重启或重新部署后历史会清空,重要的图请及时打包下载。")
+    if not os.path.isdir(OUTPUT_ROOT):
+        st.info("还没有历史记录,先去生成一批吧。")
+        return
+    runs = sorted([d for d in os.listdir(OUTPUT_ROOT)
+                   if os.path.isdir(os.path.join(OUTPUT_ROOT, d))], reverse=True)
+    if not runs:
+        st.info("还没有历史记录,先去生成一批吧。")
+        return
+
+    def _label(r):
+        # run_20260611_153045 -> 2026-06-11 15:30:45
+        try:
+            ts = datetime.datetime.strptime(r, "run_%Y%m%d_%H%M%S")
+            return ts.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return r
+
+    sel = st.selectbox("选择批次(最新在前)", options=runs, format_func=_label, key="his_run")
+    run_dir = os.path.join(OUTPUT_ROOT, sel)
+    files = sorted(f for f in os.listdir(run_dir) if f.lower().endswith(".png"))
+    if not files:
+        st.info("这个批次没有图片。")
+        return
+    st.write(f"共 {len(files)} 张:")
+    results = []
+    for f in files:
+        with open(os.path.join(run_dir, f), "rb") as fp:
+            results.append((os.path.splitext(f)[0], fp.read()))
+    _render_results(results, f"{_label(sel)}_历史批次.zip", f"his_{sel}")
+
+
+# ===========================================================================
 # 页面
 # ===========================================================================
 st.title("💎 珠宝图片生成器")
+check_versions()
 require_password()
 
 api_key = get_api_key()
@@ -497,11 +631,13 @@ if not api_key:
     st.error("服务器未配置 OPENAI_API_KEY,请联系管理员。")
     st.stop()
 
-buyer_tab, ecom_tab, up_tab = st.tabs(
-    ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "🔍 图片放大"])
+buyer_tab, ecom_tab, up_tab, his_tab = st.tabs(
+    ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "🔍 图片放大", "📁 历史记录"])
 with buyer_tab:
     render_buyer_show(api_key)
 with ecom_tab:
     render_ecommerce(api_key)
 with up_tab:
     render_upscale()
+with his_tab:
+    render_history()
