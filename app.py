@@ -343,7 +343,7 @@ def render_ecommerce(api_key):
         shop = st.selectbox("店铺风格", options=list(SHOPS.keys()), index=0, key="ec_shop")
     with scol2:
         jtype = st.selectbox("首饰类型",
-                             options=["项链", "戒指", "手链", "手镯", "耳饰", "自动判断"],
+                             options=["项链", "吊坠", "戒指", "手链", "手镯", "耳饰", "自动判断"],
                              index=0, key="ec_type")
 
     # 该店铺的专属数字模特(自动从仓库加载脖子/手/耳三张;也允许临时上传覆盖)
