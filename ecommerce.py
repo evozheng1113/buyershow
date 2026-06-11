@@ -10,7 +10,7 @@
 
 # 版本号:三个文件(app.py / ecommerce.py / buyer_show.py)必须一致,
 # 每次改动一起升级、一起传 GitHub。网页底部会校验并显示。
-VERSION = "3.0"
+VERSION = "3.1"
 
 # 输出尺寸:gpt-image-2 原生最高 2K;3:4 用 1024x1536(可后期放大到 4K)
 ECOM_SIZE = "1024x1536"

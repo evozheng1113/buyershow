@@ -18,7 +18,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.0"
+VERSION = "3.1"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -90,6 +90,14 @@ def to_named_bytes(uploaded, fallback_name):
     return (name, data)
 
 
+def _read_png(v):
+    """结果在会话里存的是磁盘路径(省内存防崩溃);按需读出 bytes。兼容旧的 bytes。"""
+    if isinstance(v, (bytes, bytearray)):
+        return v
+    with open(v, "rb") as f:
+        return f.read()
+
+
 def new_run_dir():
     d = os.path.join(OUTPUT_ROOT, datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S"))
     os.makedirs(d, exist_ok=True)
@@ -115,7 +123,7 @@ def zip_download(results, fname):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, png in results:
-            zf.writestr(f"{name}.png", png)
+            zf.writestr(f"{name}.png", _read_png(png))
     st.download_button("📦 打包下载全部", data=buf.getvalue(),
                        file_name=fname, mime="application/zip",
                        use_container_width=True)
@@ -310,7 +318,7 @@ def render_buyer_show(api_key):
                 st.warning("未检测到盒子参考图(box_black / box_burgundy),首饰盒场景将按文字描述生成。")
 
             run_dir = new_run_dir()
-            results, group_base, items = [], {}, []
+            results, group_base, group_base_path, items = [], {}, {}, []
             progress = st.progress(0.0, text="准备中...")
             preview = st.empty()
             for i, scene in enumerate(scenes, 1):
@@ -320,15 +328,21 @@ def render_buyer_show(api_key):
                     if scene.get("ref") == "base":
                         base_png = group_base.get(scene.get("group"))
                         second = ("base.png", base_png) if base_png else wearing
+                        # ctx 里存基准图的磁盘路径而不是大图本体,省内存
+                        bp = group_base_path.get(scene.get("group"))
+                        second_ctx = ("base.png", bp) if (base_png and bp) else wearing
                     else:
                         second = pick_second_ref(scene, wearing, boxes)
+                        second_ctx = second
                     png = generate_one(client, jewelry, second, scene, quality=q)
+                    fpath = os.path.join(run_dir, f"{scene['name']}.png")
+                    with open(fpath, "wb") as fp:
+                        fp.write(png)
                     if scene.get("var") == 0 and scene.get("group") is not None:
                         group_base[scene["group"]] = png
-                    results.append((scene["name"], png))
-                    items.append({"scene": scene, "second": second, "q": q})
-                    with open(os.path.join(run_dir, f"{scene['name']}.png"), "wb") as fp:
-                        fp.write(png)
+                        group_base_path[scene["group"]] = fpath
+                    results.append((scene["name"], fpath))  # 存路径不存大图,防内存爆掉
+                    items.append({"scene": scene, "second": second_ctx, "q": q})
                     preview.image(png, caption=f"刚生成:{scene['name']} · {q}", width=260)
                 except Exception as e:
                     st.error(f"{scene['name']} 生成失败:{e}")
@@ -348,16 +362,17 @@ def render_buyer_show(api_key):
         it = ctx["items"][idx]
         name = results[idx][0]
         try:
+            sec = it["second"]
+            if sec and isinstance(sec[1], str):  # 基准图存的是路径,读回 bytes
+                sec = (sec[0], _read_png(sec[1]))
             with st.spinner(f"正在重出 {name}(同场景重新抽一张)..."):
                 png = generate_one(OpenAI(api_key=api_key), ctx["jewelry"],
-                                   it["second"], it["scene"], quality=it["q"])
-            results[idx] = (name, png)
+                                   sec, it["scene"], quality=it["q"])
+            fpath = os.path.join(ctx["run_dir"], f"{name}.png")
+            with open(fpath, "wb") as fp:
+                fp.write(png)
+            results[idx] = (name, fpath)
             st.session_state["bs_results"] = results
-            try:
-                with open(os.path.join(ctx["run_dir"], f"{name}.png"), "wb") as fp:
-                    fp.write(png)
-            except Exception:
-                pass
             st.rerun()
         except Exception as e:
             st.error(f"{name} 重出失败:{e}")
@@ -373,7 +388,11 @@ def _render_results(results, zip_name, key_prefix, regen=None):
         return
     st.success(f"成功生成 {len(results)} 张。")
     cols = st.columns(3)
-    for idx, (name, png) in enumerate(results):
+    for idx, (name, stored) in enumerate(results):
+        try:
+            png = _read_png(stored)
+        except Exception:
+            continue  # 服务器重启后临时文件丢失,跳过
         with cols[idx % 3]:
             st.image(png, caption=name, use_container_width=True)
             if regen is None:
@@ -497,9 +516,10 @@ def render_ecommerce(api_key):
                     raw_png = generate_ecom(client, refs, job["prompt"])
                     png = upscale_png(raw_png, scale)
                     name = f"{shop}_{job['name']}"
-                    results.append((name, png))
-                    with open(os.path.join(run_dir, f"{name}.png"), "wb") as fp:
+                    fpath = os.path.join(run_dir, f"{name}.png")
+                    with open(fpath, "wb") as fp:
                         fp.write(png)
+                    results.append((name, fpath))  # 存路径不存大图,防内存爆掉
                     preview.image(png, caption=f"刚生成:{name}", width=260)
                 except Exception as e:
                     st.error(f"{job['name']} 生成失败:{e}")
@@ -533,13 +553,11 @@ def render_ecommerce(api_key):
                     else ctx["product_refs"]
                 raw_png = generate_ecom(OpenAI(api_key=api_key), refs, job["prompt"])
                 png = upscale_png(raw_png, ctx["scale"])
-            results[idx] = (name, png)
+            fpath = os.path.join(ctx["run_dir"], f"{name}.png")
+            with open(fpath, "wb") as fp:
+                fp.write(png)
+            results[idx] = (name, fpath)
             st.session_state["ec_results"] = results
-            try:
-                with open(os.path.join(ctx["run_dir"], f"{name}.png"), "wb") as fp:
-                    fp.write(png)
-            except Exception:
-                pass
             st.rerun()
         except Exception as e:
             st.error(f"{name} 重出失败:{e}")
@@ -567,6 +585,7 @@ def render_upscale():
         return
 
     results = []
+    run_dir = new_run_dir()
     progress = st.progress(0.0, text="放大中...")
     for i, f in enumerate(files, 1):
         progress.progress((i - 1) / len(files), text=f"放大第 {i}/{len(files)} 张...")
@@ -574,7 +593,11 @@ def render_upscale():
             data = f.getvalue()
             big = upscale_png(data, factor)
             base = os.path.splitext(getattr(f, "name", f"image_{i}"))[0]
-            results.append((f"{base}_放大{up_scale.split()[0]}x", big))
+            name = f"{base}_放大{up_scale.split()[0]}x"
+            fpath = os.path.join(run_dir, f"{name}.png")
+            with open(fpath, "wb") as fp:
+                fp.write(big)
+            results.append((name, fpath))  # 存路径不存大图,防内存爆掉
         except Exception as e:
             st.error(f"{getattr(f,'name','图片')} 放大失败:{e}")
     progress.progress(1.0, text="完成")
@@ -611,12 +634,37 @@ def render_history():
     if not files:
         st.info("这个批次没有图片。")
         return
-    st.write(f"共 {len(files)} 张:")
-    results = []
-    for f in files:
-        with open(os.path.join(run_dir, f), "rb") as fp:
-            results.append((os.path.splitext(f)[0], fp.read()))
-    _render_results(results, f"{_label(sel)}_历史批次.zip", f"his_{sel}")
+    st.write(f"该批次共 {len(files)} 张。")
+
+    # 大图只在点击后加载,且页面上只显示缩略图(防止每次操作都重新推送几十 MB 大图拖垮服务器)
+    if st.button("📂 加载这批图片预览", key="his_load"):
+        st.session_state["his_loaded"] = sel
+    if st.session_state.get("his_loaded") != sel:
+        return
+
+    from PIL import Image
+    cols = st.columns(4)
+    for idx, f in enumerate(files):
+        fp = os.path.join(run_dir, f)
+        try:
+            im = Image.open(fp).convert("RGB")
+            im.thumbnail((360, 540))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=80)
+            with cols[idx % 4]:
+                st.image(buf.getvalue(), caption=os.path.splitext(f)[0],
+                         use_container_width=True)
+        except Exception:
+            continue
+    # 下载一律走打包(原图全尺寸),不做单张下载按钮,保持页面轻
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            with open(os.path.join(run_dir, f), "rb") as fp2:
+                zf.writestr(f, fp2.read())
+    st.download_button("📦 下载这批原图(zip)", data=buf.getvalue(),
+                       file_name=f"{_label(sel)}_历史批次.zip", mime="application/zip",
+                       use_container_width=True, key=f"his_zip_{sel}")
 
 
 # ===========================================================================
