@@ -18,7 +18,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.1"
+VERSION = "3.2"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -421,7 +421,7 @@ def render_ecommerce(api_key):
         shop = st.selectbox("店铺风格", options=list(SHOPS.keys()), index=0, key="ec_shop")
     with scol2:
         jtype = st.selectbox("首饰类型",
-                             options=["项链", "吊坠", "戒指", "手链", "手镯", "耳饰", "自动判断"],
+                             options=["项链", "吊坠", "戒指", "手链", "手镯", "耳饰", "胸针", "自动判断"],
                              index=0, key="ec_type")
 
     # 该店铺的专属数字模特(自动从仓库加载脖子/手/耳三张;也允许临时上传覆盖)

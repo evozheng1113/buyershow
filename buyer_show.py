@@ -30,7 +30,7 @@ from openai import OpenAI
 
 # 版本号:三个文件(app.py / ecommerce.py / buyer_show.py)必须一致,
 # 每次改动一起升级、一起传 GitHub。网页底部会校验并显示。
-VERSION = "3.1"
+VERSION = "3.2"
 
 MODEL = "gpt-image-2"
 SIZE = "1024x1536"        # 竖图,更接近手机随手拍 / 社交媒体买家秀比例
