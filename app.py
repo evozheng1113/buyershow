@@ -18,7 +18,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.2"
+VERSION = "3.3"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -27,6 +27,7 @@ import buyer_show as _bs_mod
 import ecommerce as _ec_mod
 from buyer_show import (
     FIDELITY_RULES,
+    BUYER_FACE_OVERRIDE,
     MODEL,
     SIZE,
     QUALITY,
@@ -149,9 +150,11 @@ def load_box_images():
     return boxes
 
 
-def generate_one(client, jewelry, second, scene, quality=QUALITY):
-    """买家秀单张:拼买家秀铁律(iPhone 真实感/不露脸)。"""
+def generate_one(client, jewelry, second, scene, quality=QUALITY, show_face=False):
+    """买家秀单张:拼买家秀铁律(iPhone 真实感/不露脸)。show_face=True 时允许露脸。"""
     full_prompt = FIDELITY_RULES + "\n【本张场景】" + scene["prompt"]
+    if show_face:
+        full_prompt += BUYER_FACE_OVERRIDE
     images = [(jewelry[0], io.BytesIO(jewelry[1]))]
     if second is not None:
         images.append((second[0], io.BytesIO(second[1])))
@@ -297,6 +300,9 @@ def render_buyer_show(api_key):
     with qcol2:
         low_tier = st.selectbox("其余张数的画质", options=["medium", "low"], index=0, key="bs_low")
 
+    show_face = st.radio("模特脸部", options=["不露脸(推荐)", "露脸"],
+                         index=0, horizontal=True, key="bs_face") == "露脸"
+
     run = st.button("🚀 开始生成", type="primary", use_container_width=True, key="bs_run")
 
     if run:
@@ -334,7 +340,7 @@ def render_buyer_show(api_key):
                     else:
                         second = pick_second_ref(scene, wearing, boxes)
                         second_ctx = second
-                    png = generate_one(client, jewelry, second, scene, quality=q)
+                    png = generate_one(client, jewelry, second, scene, quality=q, show_face=show_face)
                     fpath = os.path.join(run_dir, f"{scene['name']}.png")
                     with open(fpath, "wb") as fp:
                         fp.write(png)
@@ -342,7 +348,7 @@ def render_buyer_show(api_key):
                         group_base[scene["group"]] = png
                         group_base_path[scene["group"]] = fpath
                     results.append((scene["name"], fpath))  # 存路径不存大图,防内存爆掉
-                    items.append({"scene": scene, "second": second_ctx, "q": q})
+                    items.append({"scene": scene, "second": second_ctx, "q": q, "show_face": show_face})
                     preview.image(png, caption=f"刚生成:{scene['name']} · {q}", width=260)
                 except Exception as e:
                     st.error(f"{scene['name']} 生成失败:{e}")
@@ -367,7 +373,8 @@ def render_buyer_show(api_key):
                 sec = (sec[0], _read_png(sec[1]))
             with st.spinner(f"正在重出 {name}(同场景重新抽一张)..."):
                 png = generate_one(OpenAI(api_key=api_key), ctx["jewelry"],
-                                   sec, it["scene"], quality=it["q"])
+                                   sec, it["scene"], quality=it["q"],
+                                   show_face=it.get("show_face", False))
             fpath = os.path.join(ctx["run_dir"], f"{name}.png")
             with open(fpath, "wb") as fp:
                 fp.write(png)
@@ -485,6 +492,9 @@ def render_ecommerce(api_key):
                                  index=0, key="ec_scale")
     scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
 
+    ec_show_face = st.radio("模特脸部(仅影响模特图)", options=["不露脸(推荐)", "露脸"],
+                            index=0, horizontal=True, key="ec_face") == "露脸"
+
     st.caption("模特图=局部特写(下巴/锁骨/手等,不露脸);场景图按首饰类型自动定呈现(链状平铺成弧、戒指立起/平放等)。整套参考图喂得越全越准。")
 
     run = st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run")
@@ -499,7 +509,8 @@ def render_ecommerce(api_key):
                 model_refs = [to_named_bytes(f, f"model_{i}.png") for i, f in enumerate(model_files)]
             else:
                 model_refs = select_model_refs(shop_models, jtype)
-            jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs), include=include)
+            jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs),
+                                        include=include, show_face=ec_show_face)
 
             run_dir = new_run_dir()
             results = []

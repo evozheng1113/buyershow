@@ -10,7 +10,7 @@
 
 # 版本号:三个文件(app.py / ecommerce.py / buyer_show.py)必须一致,
 # 每次改动一起升级、一起传 GitHub。网页底部会校验并显示。
-VERSION = "3.2"
+VERSION = "3.3"
 
 # 输出尺寸:gpt-image-2 原生最高 2K;3:4 用 1024x1536(可后期放大到 4K)
 ECOM_SIZE = "1024x1536"
@@ -278,16 +278,24 @@ def digital_model_prompts(shop):
     return neck, hand, ear
 
 
-def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, include="both"):
+# 露脸开关:True 时给模特图追加"允许露脸"覆盖指令
+ECOM_FACE_OVERRIDE = ("\n【允许露脸 · 覆盖前面不露脸的限制】本张取景可适当拉远,自然露出完整的脸与清晰五官,"
+                      "面容精致自然、气质高级优雅;忽略前面所有'不露脸/只露下巴/脸在画框外'的要求。")
+
+
+def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, include="both", show_face=False):
     """返回生成任务。include: 'both' / 'model'(只模特) / 'scene'(只场景)。
-    模特图用局部特写(带上下文,不扩图);场景图按首饰类型定呈现。"""
+    show_face=True 时模特图允许露脸。模特图用局部特写;场景图按首饰类型定呈现。"""
     jobs = []
     if include in ("both", "model"):
         for i, angle in enumerate(TIGHT_ANGLES, 1):
+            prompt = _model_prompt(shop, jewelry_type, angle, has_model_ref, tight=True)
+            if show_face:
+                prompt += ECOM_FACE_OVERRIDE
             jobs.append({
                 "name": f"模特图_{i}",
                 "kind": "model",
-                "prompt": _model_prompt(shop, jewelry_type, angle, has_model_ref, tight=True),
+                "prompt": prompt,
                 "use_model_ref": has_model_ref,
             })
     if include in ("both", "scene"):
