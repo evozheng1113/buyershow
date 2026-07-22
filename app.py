@@ -18,7 +18,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.3"
+VERSION = "3.4"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -282,7 +282,8 @@ def render_buyer_show(api_key):
     with scol1:
         season = st.selectbox("季节(决定穿搭)", options=["不限", "夏天", "冬天"], index=0, key="bs_season")
     with scol2:
-        env = st.selectbox("场景环境", options=["不限", "室内", "户外"], index=0, key="bs_env")
+        env = st.selectbox("场景环境", options=["不限", "室内", "户外", "轻奢日常"], index=0, key="bs_env",
+                           help="轻奢日常:iPhone 俯拍手部特写、多件叠戴 + 奢牌手袋/皮鞋压角、暖调家居氛围(微购相册富家太太风)")
 
     mode = st.radio("生成模式", options=["分场景(每场景3张·同一买家)", "无要求(18张各不相同)"],
                     index=0, horizontal=True, key="bs_mode")
