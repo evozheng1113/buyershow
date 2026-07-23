@@ -46,6 +46,9 @@ from ecommerce import (
 
 st.set_page_config(page_title="珠宝图片生成器", page_icon="💎", layout="wide")
 
+# 文案生成用的文字模型(便宜够用;如失效可改成账号里可用的其它文本模型)
+COPY_MODEL = "gpt-4o-mini"
+
 
 # ===========================================================================
 # 通用工具
@@ -128,6 +131,35 @@ def zip_download(results, fname):
     st.download_button("📦 打包下载全部", data=buf.getvalue(),
                        file_name=fname, mime="application/zip",
                        use_container_width=True)
+
+
+# ===========================================================================
+# 买家秀文案生成(文字模型,不生图、几分钱一次)
+# ===========================================================================
+def generate_review_copy(client, title, sample, n=3):
+    """根据宝贝标题 / 文案范例,生成 n 条真实、无 AI 味的买家秀文案(每条 80-160 字)。"""
+    sys_prompt = (
+        "你是一个真实的珠宝网店买家,刚收到并戴上了首饰,在淘宝/小红书写真实评价。"
+        "写作要求:口语化、有具体生活细节、像真人随手写的;绝对不能有 AI 腔和模板感,"
+        "不要华丽排比、不要堆砌形容词、不要每条开头都一样。可以有一点点小口误感、小语气词,自然真实。"
+    )
+    user_prompt = (
+        f"【宝贝标题】{title or '(未提供)'}\n"
+        f"【文案范例 · 模仿它的语气和角度,但内容要不同,不要抄】\n{sample or '(未提供)'}\n\n"
+        f"请写 {n} 条【不同】的买家秀好评,每条 80-160 个字。"
+        "内容要像真的买过、戴过、用过的人写的真实感受;每条只挑 1-2 个点自然地夸,不要把所有点堆在一条里。"
+        "可写的角度(自选):客服态度好/耐心、发货快、包装精美有仪式感、钻石很闪很亮、做工精致甚至比专柜还好、"
+        "戴上显手白/显气质、性价比高、复购/推荐朋友 等。"
+        "每条可带 0-1 个 emoji(也可不带)。"
+        "只输出文案本身,每条之间空一行,不要写编号、不要写任何解释或标题。"
+    )
+    r = client.chat.completions.create(
+        model=COPY_MODEL,
+        messages=[{"role": "system", "content": sys_prompt},
+                  {"role": "user", "content": user_prompt}],
+        temperature=0.95,
+    )
+    return r.choices[0].message.content.strip()
 
 
 # ===========================================================================
@@ -303,6 +335,29 @@ def render_buyer_show(api_key):
 
     show_face = st.radio("模特脸部", options=["不露脸(推荐)", "露脸"],
                          index=0, horizontal=True, key="bs_face") == "露脸"
+
+    # ---- 买家秀文案生成(可选):一组场景 = 一套文案,条数默认跟场景数量一致 ----
+    with st.expander("📝 顺便生成买家秀文案(真实、无 AI 味,80-160 字 · 一组一套)"):
+        copy_title = st.text_input("宝贝标题(可只填这个)", key="bs_copy_title",
+                                   placeholder="如:利奥星钻 培育钻石18K金 项链")
+        copy_sample = st.text_area("好评范例(可只填这个,把你们利奥星钻真实好评粘进来,越像越好)",
+                                   key="bs_copy_sample", height=100,
+                                   placeholder="粘贴 1-3 条真实好评,AI 照这个语气写;标题和范例填一个即可,都填更准")
+        copy_n = st.slider("生成几套文案", 1, 6, value=int(n_scenes), key="bs_copy_n",
+                           help="默认 = 场景数量(几组买家秀就配几套文案),也可手动改")
+        if st.button("✨ 生成文案", key="bs_copy_run"):
+            if not (copy_title or "").strip() and not (copy_sample or "").strip():
+                st.warning("宝贝标题和好评范例至少填一个。")
+            else:
+                try:
+                    with st.spinner("正在写文案..."):
+                        txt = generate_review_copy(OpenAI(api_key=api_key), copy_title, copy_sample, copy_n)
+                    st.session_state["bs_copy_out"] = txt
+                except Exception as e:
+                    st.error(f"文案生成失败:{e}")
+        if st.session_state.get("bs_copy_out"):
+            st.text_area("生成结果(可直接复制;不满意再点一次重出)",
+                         value=st.session_state["bs_copy_out"], height=260, key="bs_copy_show")
 
     run = st.button("🚀 开始生成", type="primary", use_container_width=True, key="bs_run")
 
