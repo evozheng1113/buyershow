@@ -10,7 +10,7 @@
 
 # 版本号:三个文件(app.py / ecommerce.py / buyer_show.py)必须一致,
 # 每次改动一起升级、一起传 GitHub。网页底部会校验并显示。
-VERSION = "3.5"
+VERSION = "3.6"
 
 # 输出尺寸:gpt-image-2 原生最高 2K;3:4 用 1024x1536(可后期放大到 4K)
 ECOM_SIZE = "1024x1536"
@@ -283,25 +283,33 @@ ECOM_FACE_OVERRIDE = ("\n【允许露脸 · 覆盖前面不露脸的限制】本
                       "面容精致自然、气质高级优雅;忽略前面所有'不露脸/只露下巴/脸在画框外'的要求。")
 
 
-def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, include="both", show_face=False):
-    """返回生成任务。include: 'both' / 'model'(只模特) / 'scene'(只场景)。
-    show_face=True 时模特图允许露脸。模特图用局部特写;场景图按首饰类型定呈现。"""
+def build_ecommerce_jobs(shop, jewelry_type="自动判断", has_model_ref=False, include="both",
+                         show_face=False, n_model=3, n_scene=3):
+    """返回生成任务。include: 'both' / 'model' / 'scene'。
+    n_model / n_scene:分别生成几张模特图 / 场景图(角度数量,按上传参考图多少动态决定)。
+    张数超过预设角度池时循环取用,并强制每张角度/构图明显不同。"""
     jobs = []
     if include in ("both", "model"):
-        for i, angle in enumerate(TIGHT_ANGLES, 1):
+        pool = TIGHT_ANGLES
+        for i in range(int(n_model)):
+            base = pool[i % len(pool)]
+            angle = f"{base}(本款第 {i+1}/{n_model} 张模特图,佩戴角度、姿势与构图必须和其它每一张都明显不同)"
             prompt = _model_prompt(shop, jewelry_type, angle, has_model_ref, tight=True)
             if show_face:
                 prompt += ECOM_FACE_OVERRIDE
             jobs.append({
-                "name": f"模特图_{i}",
+                "name": f"模特图_{i+1}",
                 "kind": "model",
                 "prompt": prompt,
                 "use_model_ref": has_model_ref,
             })
     if include in ("both", "scene"):
-        for i, setup in enumerate(scene_setups_for(jewelry_type), 1):
+        pool = scene_setups_for(jewelry_type)
+        for i in range(int(n_scene)):
+            base = pool[i % len(pool)]
+            setup = f"{base}(本款第 {i+1}/{n_scene} 张场景图,拍摄角度与构图必须和其它每一张都明显不同)"
             jobs.append({
-                "name": f"场景图_{i}",
+                "name": f"场景图_{i+1}",
                 "kind": "scene",
                 "prompt": _scene_prompt(shop, setup),
                 "use_model_ref": False,

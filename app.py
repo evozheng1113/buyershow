@@ -18,7 +18,7 @@ import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.5"
+VERSION = "3.6"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -551,7 +551,18 @@ def render_ecommerce(api_key):
     ec_show_face = st.radio("模特脸部(仅影响模特图)", options=["不露脸(推荐)", "露脸"],
                             index=0, horizontal=True, key="ec_face") == "露脸"
 
-    st.caption("模特图=局部特写(下巴/锁骨/手等,不露脸);场景图按首饰类型自动定呈现(链状平铺成弧、戒指立起/平放等)。整套参考图喂得越全越准。")
+    # 输出角度数量跟着上传的参考图数量走:
+    # 参考图 ≥3 个 → 按参考图数量出对应张数;只有 1-2 个 → 场景图≥3、模特图≥2。
+    ref_count = len(prod_files) if prod_files else 0
+    if ref_count >= 3:
+        n_scene = min(ref_count, 10)
+        n_model = min(ref_count, 10)
+    else:
+        n_scene = 3
+        n_model = 2
+    st.caption(f"模特图=局部特写(不露脸);场景图按首饰类型定呈现。"
+               f"你上传了 {ref_count} 张参考图 → 本次将生成 **{n_model} 张模特图 + {n_scene} 张场景图**"
+               f"(参考图≥3张时按你的角度数量出;1-2张时场景≥3、模特≥2)。整套参考图喂得越全越准。")
 
     run = st.button("🚀 生成电商图", type="primary", use_container_width=True, key="ec_run")
 
@@ -566,7 +577,8 @@ def render_ecommerce(api_key):
             else:
                 model_refs = select_model_refs(shop_models, jtype)
             jobs = build_ecommerce_jobs(shop, jtype, has_model_ref=bool(model_refs),
-                                        include=include, show_face=ec_show_face)
+                                        include=include, show_face=ec_show_face,
+                                        n_model=n_model, n_scene=n_scene)
 
             run_dir = new_run_dir()
             results = []
