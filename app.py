@@ -2,23 +2,27 @@
 """
 珠宝图片生成器 · 网页版 (Streamlit)
 =====================================
-两个标签:
+标签:
   1) 买家秀 —— iPhone 生活感、不露脸的真实晒单图
-  2) 电商精修图 —— 5 家店铺风格、高级珠宝棚拍图(3 模特图 + 3 场景图)
+  2) 电商精修图 —— 5 家店铺风格、高级珠宝棚拍图
+  3) 图片放大  4) 历史记录
 API key 集中放在服务器(st.secrets / 环境变量),用户不接触。
+
+生图引擎(v3.8 新增):可切换 OpenAI 官方 / aishare 中转站(gpt-image-2 或 nano banana)。
 """
 
 import base64
 import datetime
 import io
 import os
+import urllib.request
 import zipfile
 
 import streamlit as st
 from openai import OpenAI
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
-VERSION = "3.7"
+VERSION = "3.8"
 
 # 每次生成自动保存到脚本同目录下的 outputs/ 文件夹,按时间分批
 OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -46,29 +50,84 @@ from ecommerce import (
 
 st.set_page_config(page_title="珠宝图片生成器", page_icon="💎", layout="wide")
 
-# 文案生成用的文字模型(便宜够用;如失效可改成账号里可用的其它文本模型)
+# 文案生成用的文字模型(便宜够用;走 OpenAI 官方 key)
 COPY_MODEL = "gpt-4o-mini"
+
+# ===========================================================================
+# ★ 生图引擎(v3.8)★
+# ---------------------------------------------------------------------------
+# provider = "openai" → OpenAI 官方直连,用 OPENAI_API_KEY(quality 生效)
+# provider = "aishare" → aishare 中转站,用 AISHARE_API_KEY + AISHARE_BASE_URL
+#   中转站按次固定计价:gpt-image-2≈$0.0075/张、nano banana2≈$0.03、nano banana Pro≈$0.04
+#   中转站返回的是图片 URL(不是 base64),下面 _img_bytes_from_result 已兼容两种。
+# 想加/改引擎:照抄一条即可。
+# ===========================================================================
+IMAGE_ENGINES = {
+    "gpt-image-2(OpenAI官方直连)": {"provider": "openai", "model": "gpt-image-2"},
+    "nano banana Pro(中转站·更强≈3毛/张)": {"provider": "aishare", "model": "gemini-3-pro-image"},
+}
+DEFAULT_ENGINE = "gpt-image-2(OpenAI官方直连)"
+AISHARE_DEFAULT_BASE = "https://ashare.token6688.com/v1"
 
 
 # ===========================================================================
 # 通用工具
 # ===========================================================================
-def get_api_key():
+def _secret(name):
     try:
-        if "OPENAI_API_KEY" in st.secrets:
-            return st.secrets["OPENAI_API_KEY"]
+        if name in st.secrets:
+            return st.secrets[name]
     except Exception:
         pass
-    return os.getenv("OPENAI_API_KEY")
+    return os.getenv(name)
+
+
+def get_api_key():
+    return _secret("OPENAI_API_KEY")
 
 
 def get_app_password():
-    try:
-        if "APP_PASSWORD" in st.secrets:
-            return st.secrets["APP_PASSWORD"]
-    except Exception:
-        pass
-    return os.getenv("APP_PASSWORD")
+    return _secret("APP_PASSWORD")
+
+
+def make_image_client(engine_name):
+    """按所选引擎返回 (client, model, provider)。找不到就用默认引擎。"""
+    cfg = IMAGE_ENGINES.get(engine_name) or IMAGE_ENGINES[DEFAULT_ENGINE]
+    provider, model = cfg["provider"], cfg["model"]
+    if provider == "aishare":
+        key = _secret("AISHARE_API_KEY")
+        base = _secret("AISHARE_BASE_URL") or AISHARE_DEFAULT_BASE
+        if not key:
+            raise RuntimeError("服务器没配置 AISHARE_API_KEY(中转站密钥)。"
+                               "请在 secrets.toml 里加上,或在上面把引擎切回「OpenAI官方」。")
+        client = OpenAI(api_key=key, base_url=base, timeout=600)
+    else:
+        key = get_api_key()
+        if not key:
+            raise RuntimeError("服务器没配置 OPENAI_API_KEY。")
+        client = OpenAI(api_key=key, timeout=600)
+    return client, model, provider
+
+
+def _img_bytes_from_result(result):
+    """兼容两种返回:OpenAI 官方给 b64_json;中转站给图片 URL。统一转成 PNG bytes。"""
+    d = result.data[0]
+    b64 = getattr(d, "b64_json", None)
+    if b64:
+        return base64.b64decode(b64)
+    url = getattr(d, "url", None)
+    if url:
+        with urllib.request.urlopen(url, timeout=180) as r:
+            return r.read()
+    raise RuntimeError("生图返回里既没有图片数据也没有 URL。")
+
+
+def _edit(client, model, images, prompt, size, quality=None):
+    """统一的图片编辑调用。quality 只在 OpenAI 官方传(中转站按次计价、不吃 quality)。"""
+    kwargs = dict(model=model, image=images, prompt=prompt, size=size, n=1)
+    if quality:
+        kwargs["quality"] = quality
+    return _img_bytes_from_result(client.images.edit(**kwargs))
 
 
 def require_password():
@@ -123,6 +182,17 @@ def check_versions():
         st.caption(f"✅ 版本 v{VERSION} · 三个文件版本一致")
 
 
+def engine_selectbox(key):
+    """生图引擎下拉(买家秀 / 电商各放一个)。返回引擎名。"""
+    names = list(IMAGE_ENGINES.keys())
+    idx = names.index(DEFAULT_ENGINE) if DEFAULT_ENGINE in names else 0
+    return st.selectbox(
+        "🧠 生图引擎(可切换、可对比)", options=names, index=idx, key=key,
+        help="中转站(aishare)按次固定计价:gpt-image-2≈5分/张最便宜、nano banana 更真实自然。"
+             "OpenAI官方是保底最稳的通道。同一套图可切不同引擎肉眼对比。"
+             "画质档(high/medium/low)只对 gpt-image 生效,nano banana 会忽略。")
+
+
 def zip_download(results, fname):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -135,17 +205,8 @@ def zip_download(results, fname):
 
 # ===========================================================================
 # 买家秀文案生成(文字模型,不生图、几分钱一次)
-# ===========================================================================
 # ---------------------------------------------------------------------------
-# 文案规则来自真实数据,不是拍脑袋:
-#   淘宝 13 店 30,863 条评价 + 京东 12 店 3,010 条 + 小红书 153 篇笔记 1,184 条评论。
-#   主题配比 = 淘宝官方评价标签的累计命中次数(买家自己投的票):
-#     外观闪亮1152 > 外观好看750 > 性价比高732 > 做工精致216 > 尺寸大小合适199 > 客服耐心143
-#   两条"预期管理"是降退货的关键(差评 329 句里尺寸占 60 句,是第一名):
-#     · 光线:真实中评「自然光下不闪,但在有阳光的地方挺闪的」→ 不说清楚就会变中评
-#     · 尺寸:真实评价「1克拉真的看起来有点蠢笨」「建议日常佩戴就买50分」→ 主动劝小反而促成交
-#   禁写项踩过的坑:小红书上「保值/回收」是最大差评来源;竞品因写错证书类型被连续投诉。
-#   数据更新时只改这里的配比和词表即可。详见 买家秀_Cowork指令.md
+# 文案规则来自真实数据(淘宝 30,863 + 京东 3,010 + 小红书 1,184 条评价分析)。详见 买家秀_Cowork指令.md
 # ---------------------------------------------------------------------------
 REVIEW_MIX = [
     ("闪度/火彩", 3, "外观闪亮、火彩、星芒、灯光下、手机拍不出"),
@@ -229,7 +290,7 @@ def load_box_images():
     return boxes
 
 
-def generate_one(client, jewelry, second, scene, quality=QUALITY, show_face=False):
+def generate_one(client, jewelry, second, scene, model, provider, quality=QUALITY, show_face=False):
     """买家秀单张:拼买家秀铁律(iPhone 真实感/不露脸)。show_face=True 时允许露脸。"""
     full_prompt = FIDELITY_RULES + "\n【本张场景】" + scene["prompt"]
     if show_face:
@@ -237,9 +298,8 @@ def generate_one(client, jewelry, second, scene, quality=QUALITY, show_face=Fals
     images = [(jewelry[0], io.BytesIO(jewelry[1]))]
     if second is not None:
         images.append((second[0], io.BytesIO(second[1])))
-    result = client.images.edit(model=MODEL, image=images, prompt=full_prompt,
-                                size=SIZE, quality=quality, n=1)
-    return base64.b64decode(result.data[0].b64_json)
+    return _edit(client, model, images, full_prompt, SIZE,
+                 quality if provider == "openai" else None)
 
 
 def pick_second_ref(scene, wearing, boxes):
@@ -299,12 +359,11 @@ def select_model_refs(models, jtype):
     return list(models.values())  # 自动判断:全给
 
 
-def generate_ecom(client, ref_images, prompt, quality=ECOM_QUALITY):
+def generate_ecom(client, ref_images, prompt, model, provider, quality=ECOM_QUALITY):
     """ref_images 是参考图列表 [(name,bytes), ...](最多 16 张):产品整套图 +(模特图)。"""
     imgs = [(n, io.BytesIO(b)) for (n, b) in ref_images[:16]]
-    result = client.images.edit(model=MODEL, image=imgs, prompt=prompt,
-                                size=ECOM_SIZE, quality=quality, n=1)
-    return base64.b64decode(result.data[0].b64_json)
+    return _edit(client, model, imgs, prompt, ECOM_SIZE,
+                 quality if provider == "openai" else None)
 
 
 def upscale_png(png_bytes, scale):
@@ -320,16 +379,21 @@ def upscale_png(png_bytes, scale):
     return out.getvalue()
 
 
-def generate_digital_model(client, shop):
+def generate_digital_model(client, shop, model, provider):
     """为店铺生成数字模特三张参考图:① 肩颈(文生图) ② 手部 ③ 侧脸耳朵(均参考①保持同一人)。"""
     neck_p, hand_p, ear_p = digital_model_prompts(shop)
-    r1 = client.images.generate(model=MODEL, prompt=neck_p, size=ECOM_SIZE, quality=ECOM_QUALITY, n=1)
-    neck_png = base64.b64decode(r1.data[0].b64_json)
+
+    def gen(prompt):
+        kwargs = dict(model=model, prompt=prompt, size=ECOM_SIZE, n=1)
+        if provider == "openai":
+            kwargs["quality"] = ECOM_QUALITY
+        return _img_bytes_from_result(client.images.generate(**kwargs))
+
+    neck_png = gen(neck_p)
 
     def edit_from_neck(prompt):
-        r = client.images.edit(model=MODEL, image=[("neck.png", io.BytesIO(neck_png))],
-                               prompt=prompt, size=ECOM_SIZE, quality=ECOM_QUALITY, n=1)
-        return base64.b64decode(r.data[0].b64_json)
+        return _edit(client, model, [("neck.png", io.BytesIO(neck_png))], prompt, ECOM_SIZE,
+                     ECOM_QUALITY if provider == "openai" else None)
 
     hand_png = edit_from_neck(hand_p)
     ear_png = edit_from_neck(ear_p)
@@ -341,6 +405,8 @@ def generate_digital_model(client, shop):
 # ===========================================================================
 def render_buyer_show(api_key):
     st.caption("上传白底首饰图 + 模特佩戴图,自动生成不同生活场景的真实买家秀(iPhone 直出感、不露脸)。")
+
+    engine = engine_selectbox("bs_engine")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -413,13 +479,17 @@ def render_buyer_show(api_key):
         if not jewelry_file or not wearing_file:
             st.warning("请先上传两张图片。")
         else:
+            try:
+                client, model, provider = make_image_client(engine)
+            except Exception as e:
+                st.error(str(e))
+                st.stop()
             if grouped:
                 scenes = build_grouped_scenes(jewelry_type=jewelry_type, season=season,
                                               env=env, n_scenes=n_scenes)
             else:
                 scenes = build_scene_pool(jewelry_type=jewelry_type, season=season, env=env)
             qualities = assign_qualities(scenes, min(n_high, len(scenes)), low_tier)
-            client = OpenAI(api_key=api_key)
 
             jewelry = to_named_bytes(jewelry_file, "jewelry.png")
             wearing = to_named_bytes(wearing_file, "wearing.png")
@@ -444,7 +514,8 @@ def render_buyer_show(api_key):
                     else:
                         second = pick_second_ref(scene, wearing, boxes)
                         second_ctx = second
-                    png = generate_one(client, jewelry, second, scene, quality=q, show_face=show_face)
+                    png = generate_one(client, jewelry, second, scene, model, provider,
+                                       quality=q, show_face=show_face)
                     fpath = os.path.join(run_dir, f"{scene['name']}.png")
                     with open(fpath, "wb") as fp:
                         fp.write(png)
@@ -459,8 +530,9 @@ def render_buyer_show(api_key):
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["bs_results"] = results  # 存起来,点下载不丢
-            # 存每张图的生成参数,供"单张重出"抽卡用
-            st.session_state["bs_ctx"] = {"jewelry": jewelry, "items": items, "run_dir": run_dir}
+            # 存每张图的生成参数,供"单张重出"抽卡用(含引擎,重出时用同一引擎)
+            st.session_state["bs_ctx"] = {"jewelry": jewelry, "items": items,
+                                          "run_dir": run_dir, "engine": engine}
 
     def _regen_bs(idx):
         """只重出买家秀第 idx 张(单张计费),其余不动。"""
@@ -472,13 +544,13 @@ def render_buyer_show(api_key):
         it = ctx["items"][idx]
         name = results[idx][0]
         try:
+            client, model, provider = make_image_client(ctx.get("engine", DEFAULT_ENGINE))
             sec = it["second"]
             if sec and isinstance(sec[1], str):  # 基准图存的是路径,读回 bytes
                 sec = (sec[0], _read_png(sec[1]))
             with st.spinner(f"正在重出 {name}(同场景重新抽一张)..."):
-                png = generate_one(OpenAI(api_key=api_key), ctx["jewelry"],
-                                   sec, it["scene"], quality=it["q"],
-                                   show_face=it.get("show_face", False))
+                png = generate_one(client, ctx["jewelry"], sec, it["scene"], model, provider,
+                                   quality=it["q"], show_face=it.get("show_face", False))
             fpath = os.path.join(ctx["run_dir"], f"{name}.png")
             with open(fpath, "wb") as fp:
                 fp.write(png)
@@ -527,6 +599,8 @@ def _render_results(results, zip_name, key_prefix, regen=None):
 def render_ecommerce(api_key):
     st.caption("选店铺风格 + 首饰类型,上传白底产品图,每款生成 3 张模特图 + 3 张场景图(3:4 高级珠宝棚拍)。")
 
+    engine = engine_selectbox("ec_engine")
+
     scol1, scol2 = st.columns(2)
     with scol1:
         shop = st.selectbox("店铺风格", options=list(SHOPS.keys()), index=0, key="ec_shop")
@@ -550,8 +624,9 @@ def render_ecommerce(api_key):
                    f"下载后分别改名为 model_{k} / model_{k}2 / model_{k}3,传到仓库即长期固定使用。")
         if st.button("生成数字模特(3 张)", key="ec_gen_model"):
             try:
+                client, model, provider = make_image_client(engine)
                 with st.spinner("正在生成数字模特(约 1 分钟)..."):
-                    neck_png, hand_png, ear_png = generate_digital_model(OpenAI(api_key=api_key), shop)
+                    neck_png, hand_png, ear_png = generate_digital_model(client, shop, model, provider)
                 # 存进会话状态,避免点下载触发重跑后图片丢失
                 st.session_state["dm_result"] = {"shop": shop,
                                                  "imgs": (neck_png, hand_png, ear_png)}
@@ -618,7 +693,11 @@ def render_ecommerce(api_key):
         if not prod_files:
             st.warning("请先上传至少一张产品参考图。")
         else:
-            client = OpenAI(api_key=api_key)
+            try:
+                client, model, provider = make_image_client(engine)
+            except Exception as e:
+                st.error(str(e))
+                st.stop()
             product_refs = [to_named_bytes(f, f"product_{i}.png") for i, f in enumerate(prod_files)]
             if model_files:
                 model_refs = [to_named_bytes(f, f"model_{i}.png") for i, f in enumerate(model_files)]
@@ -640,7 +719,7 @@ def render_ecommerce(api_key):
                         refs = product_refs[:13] + model_refs
                     else:
                         refs = product_refs
-                    raw_png = generate_ecom(client, refs, job["prompt"])
+                    raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
                     png = upscale_png(raw_png, scale)
                     name = f"{shop}_{job['name']}"
                     fpath = os.path.join(run_dir, f"{name}.png")
@@ -653,10 +732,11 @@ def render_ecommerce(api_key):
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["ec_results"] = results
-            # 存每张图的生成参数,供"单张重出"抽卡用
+            # 存每张图的生成参数,供"单张重出"抽卡用(含引擎)
             st.session_state["ec_ctx"] = {
                 "scale": scale,
                 "run_dir": run_dir,
+                "engine": engine,
                 "jobs": {f"{shop}_{j['name']}": j for j in jobs},
                 "product_refs": product_refs,
                 "model_refs": model_refs,
@@ -675,10 +755,11 @@ def render_ecommerce(api_key):
             st.warning("这张图没有保存生成参数,请重新生成一批后再抽卡。")
             return
         try:
+            client, model, provider = make_image_client(ctx.get("engine", DEFAULT_ENGINE))
             with st.spinner(f"正在重出 {name}(同参数重新抽一张)..."):
                 refs = (ctx["product_refs"][:13] + ctx["model_refs"]) if job["use_model_ref"] \
                     else ctx["product_refs"]
-                raw_png = generate_ecom(OpenAI(api_key=api_key), refs, job["prompt"])
+                raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
                 png = upscale_png(raw_png, ctx["scale"])
             fpath = os.path.join(ctx["run_dir"], f"{name}.png")
             with open(fpath, "wb") as fp:
@@ -803,8 +884,8 @@ require_password()
 
 api_key = get_api_key()
 if not api_key:
-    st.error("服务器未配置 OPENAI_API_KEY,请联系管理员。")
-    st.stop()
+    st.warning("服务器未配置 OPENAI_API_KEY;文案功能和「OpenAI官方」引擎将不可用,"
+               "但中转站引擎(需配置 AISHARE_API_KEY)仍可生图。")
 
 buyer_tab, ecom_tab, up_tab, his_tab = st.tabs(
     ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "🔍 图片放大", "📁 历史记录"])
