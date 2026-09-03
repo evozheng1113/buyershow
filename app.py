@@ -15,6 +15,7 @@ import base64
 import datetime
 import io
 import os
+import time
 import urllib.request
 import zipfile
 
@@ -109,6 +110,24 @@ def make_image_client(engine_name):
     return client, model, provider
 
 
+def _download_bytes(url, tries=5):
+    """从 URL 下载图片 bytes;中转站 CDN 偶尔会重置连接([Errno 104]),自动重试几次。
+    图已经生成好了、下载不额外计费,所以放心多试。"""
+    last = None
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                data = r.read()
+            if data:
+                return data
+            raise RuntimeError("下载到空内容")
+        except Exception as e:
+            last = e
+            time.sleep(2 * (i + 1))  # 2s,4s,6s,8s 递增退避
+    raise RuntimeError(f"图已生成但下载失败(重试 {tries} 次仍被重置):{last}")
+
+
 def _img_bytes_from_result(result):
     """兼容两种返回:OpenAI 官方给 b64_json;中转站给图片 URL。统一转成 PNG bytes。"""
     d = result.data[0]
@@ -117,8 +136,7 @@ def _img_bytes_from_result(result):
         return base64.b64decode(b64)
     url = getattr(d, "url", None)
     if url:
-        with urllib.request.urlopen(url, timeout=180) as r:
-            return r.read()
+        return _download_bytes(url)
     raise RuntimeError("生图返回里既没有图片数据也没有 URL。")
 
 
