@@ -18,9 +18,14 @@ import os
 import time
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
 from openai import OpenAI
+
+# 并发生成的线程数:中转站文档建议 6~8,这里保守取 4(更稳,少触发限流)。
+# 想更快可调大;报错变多就调小。
+IMG_WORKERS = 4
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
 VERSION = "3.8"
@@ -138,6 +143,30 @@ def _img_bytes_from_result(result):
     if url:
         return _download_bytes(url)
     raise RuntimeError("生图返回里既没有图片数据也没有 URL。")
+
+
+def _crop_center_3x4(png_bytes):
+    """把图居中裁成 3:4 竖图(宽:高=3:4)。
+    banana(gemini-3-pro-image)一律输出 2048×2048 方图 → 裁成 1536×2048(约2K,3:4)。
+    裁掉的是两侧虚化背景,不损主体构图。已经是 3:4 或更竖的图基本不动。"""
+    from PIL import Image
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    w, h = im.size
+    target = 3 / 4  # 宽/高
+    ratio = w / h
+    if abs(ratio - target) < 0.01:
+        return png_bytes  # 已经是 3:4,原样返回
+    if ratio > target:          # 太宽(含方图)→ 裁两侧
+        nw = int(round(h * target))
+        left = (w - nw) // 2
+        im = im.crop((left, 0, left + nw, h))
+    else:                       # 太竖 → 裁上下
+        nh = int(round(w / target))
+        top = (h - nh) // 2
+        im = im.crop((0, top, w, top + nh))
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
 
 
 def _edit(client, model, images, prompt, size, quality=None):
@@ -316,8 +345,11 @@ def generate_one(client, jewelry, second, scene, model, provider, quality=QUALIT
     images = [(jewelry[0], io.BytesIO(jewelry[1]))]
     if second is not None:
         images.append((second[0], io.BytesIO(second[1])))
-    return _edit(client, model, images, full_prompt, SIZE,
-                 quality if provider == "openai" else None)
+    png = _edit(client, model, images, full_prompt, SIZE,
+                quality if provider == "openai" else None)
+    if provider == "aishare":
+        png = _crop_center_3x4(png)  # banana 出方图,裁成 3:4
+    return png
 
 
 def pick_second_ref(scene, wearing, boxes):
@@ -380,8 +412,11 @@ def select_model_refs(models, jtype):
 def generate_ecom(client, ref_images, prompt, model, provider, quality=ECOM_QUALITY):
     """ref_images 是参考图列表 [(name,bytes), ...](最多 16 张):产品整套图 +(模特图)。"""
     imgs = [(n, io.BytesIO(b)) for (n, b) in ref_images[:16]]
-    return _edit(client, model, imgs, prompt, ECOM_SIZE,
-                 quality if provider == "openai" else None)
+    png = _edit(client, model, imgs, prompt, ECOM_SIZE,
+                quality if provider == "openai" else None)
+    if provider == "aishare":
+        png = _crop_center_3x4(png)  # banana 出方图,裁成 3:4
+    return png
 
 
 def upscale_png(png_bytes, scale):
@@ -415,7 +450,77 @@ def generate_digital_model(client, shop, model, provider):
 
     hand_png = edit_from_neck(hand_p)
     ear_png = edit_from_neck(ear_p)
+    if provider == "aishare":
+        neck_png = _crop_center_3x4(neck_png)
+        hand_png = _crop_center_3x4(hand_png)
+        ear_png = _crop_center_3x4(ear_png)
     return neck_png, hand_png, ear_png
+
+
+# ===========================================================================
+# 买家秀:并发批处理(两阶段:先出基准/独立图,再出依赖基准的变体图)
+# 线程里只做"生成+写盘",所有 st.* 都在主线程的 as_completed 循环里调,线程安全。
+# ===========================================================================
+def _gen_bs_batch(client, model, provider, scenes, qualities, jewelry, wearing, boxes,
+                  run_dir, show_face, progress, preview):
+    n = len(scenes)
+    results = [None] * n
+    items = [None] * n
+    group_base = {}            # group -> (png_bytes, fpath)
+    counter = {"c": 0}
+
+    def worker(i, second):
+        scene = scenes[i]
+        png = generate_one(client, jewelry, second, scene, model, provider,
+                           quality=qualities[i], show_face=show_face)
+        fpath = os.path.join(run_dir, f"{scene['name']}.png")
+        with open(fpath, "wb") as fp:
+            fp.write(png)
+        return i, second, png, fpath
+
+    def run_phase(indices, second_for):
+        if not indices:
+            return
+        with ThreadPoolExecutor(max_workers=IMG_WORKERS) as ex:
+            futs = {ex.submit(worker, i, second_for(i)): i for i in indices}
+            for fut in as_completed(futs):
+                idx = futs[fut]
+                try:
+                    i, second, png, fpath = fut.result()
+                    scene = scenes[i]
+                    results[i] = (scene["name"], fpath)
+                    items[i] = {"scene": scene, "second": second,
+                                "q": qualities[i], "show_face": show_face}
+                    if scene.get("var") == 0 and scene.get("group") is not None:
+                        group_base[scene["group"]] = (png, fpath)
+                    preview.image(png, caption=f"刚生成:{scene['name']}", width=240)
+                except Exception as e:
+                    st.error(f"{scenes[idx]['name']} 生成失败:{e}")
+                counter["c"] += 1
+                progress.progress(counter["c"] / n, text=f"已完成 {counter['c']}/{n} 张...")
+
+    # 阶段1:非 base 引用的场景(基准图 + 独立图)
+    p1 = [i for i, s in enumerate(scenes) if s.get("ref") != "base"]
+    run_phase(p1, lambda i: pick_second_ref(scenes[i], wearing, boxes))
+
+    # 阶段2:依赖基准图的变体(用同组基准图当第二张参考)
+    p2 = [i for i, s in enumerate(scenes) if s.get("ref") == "base"]
+
+    def second_p2(i):
+        gb = group_base.get(scenes[i].get("group"))
+        return ("base.png", gb[0]) if gb else wearing
+    run_phase(p2, second_p2)
+
+    # 变体图的 second 改存"基准图路径"(省内存,和单张重出逻辑一致)
+    for i, s in enumerate(scenes):
+        if s.get("ref") == "base" and items[i]:
+            gb = group_base.get(s.get("group"))
+            if gb:
+                items[i]["second"] = ("base.png", gb[1])
+
+    res = [results[i] for i in range(n) if results[i]]
+    itm = [items[i] for i in range(n) if results[i]]
+    return res, itm
 
 
 # ===========================================================================
@@ -516,35 +621,11 @@ def render_buyer_show(api_key):
                 st.warning("未检测到盒子参考图(box_black / box_burgundy),首饰盒场景将按文字描述生成。")
 
             run_dir = new_run_dir()
-            results, group_base, group_base_path, items = [], {}, {}, []
-            progress = st.progress(0.0, text="准备中...")
+            progress = st.progress(0.0, text=f"并发生成中(同时 {IMG_WORKERS} 张)...")
             preview = st.empty()
-            for i, scene in enumerate(scenes, 1):
-                q = qualities[i - 1]
-                progress.progress((i - 1) / len(scenes), text=f"生成第 {i}/{len(scenes)} 张({q})...")
-                try:
-                    if scene.get("ref") == "base":
-                        base_png = group_base.get(scene.get("group"))
-                        second = ("base.png", base_png) if base_png else wearing
-                        # ctx 里存基准图的磁盘路径而不是大图本体,省内存
-                        bp = group_base_path.get(scene.get("group"))
-                        second_ctx = ("base.png", bp) if (base_png and bp) else wearing
-                    else:
-                        second = pick_second_ref(scene, wearing, boxes)
-                        second_ctx = second
-                    png = generate_one(client, jewelry, second, scene, model, provider,
-                                       quality=q, show_face=show_face)
-                    fpath = os.path.join(run_dir, f"{scene['name']}.png")
-                    with open(fpath, "wb") as fp:
-                        fp.write(png)
-                    if scene.get("var") == 0 and scene.get("group") is not None:
-                        group_base[scene["group"]] = png
-                        group_base_path[scene["group"]] = fpath
-                    results.append((scene["name"], fpath))  # 存路径不存大图,防内存爆掉
-                    items.append({"scene": scene, "second": second_ctx, "q": q, "show_face": show_face})
-                    preview.image(png, caption=f"刚生成:{scene['name']} · {q}", width=260)
-                except Exception as e:
-                    st.error(f"{scene['name']} 生成失败:{e}")
+            results, items = _gen_bs_batch(client, model, provider, scenes, qualities,
+                                           jewelry, wearing, boxes, run_dir, show_face,
+                                           progress, preview)
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["bs_results"] = results  # 存起来,点下载不丢
@@ -609,6 +690,42 @@ def _render_results(results, zip_name, key_prefix, regen=None):
                                  help="只重新生成这一张(单张计费),不满意可反复抽卡"):
                         regen(idx)
     zip_download(results, zip_name)
+
+
+# ===========================================================================
+# 电商精修图:并发批处理(每张互相独立,单阶段并发)
+# ===========================================================================
+def _gen_ec_batch(client, model, provider, jobs, shop, product_refs, model_refs,
+                  scale, run_dir, progress, preview):
+    n = len(jobs)
+    results = [None] * n
+    counter = {"c": 0}
+
+    def worker(i):
+        job = jobs[i]
+        refs = (product_refs[:13] + model_refs) if job["use_model_ref"] else product_refs
+        raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
+        png = upscale_png(raw_png, scale)
+        name = f"{shop}_{job['name']}"
+        fpath = os.path.join(run_dir, f"{name}.png")
+        with open(fpath, "wb") as fp:
+            fp.write(png)
+        return i, name, png, fpath
+
+    with ThreadPoolExecutor(max_workers=IMG_WORKERS) as ex:
+        futs = {ex.submit(worker, i): i for i in range(n)}
+        for fut in as_completed(futs):
+            idx = futs[fut]
+            try:
+                i, name, png, fpath = fut.result()
+                results[i] = (name, fpath)
+                preview.image(png, caption=f"刚生成:{name}", width=240)
+            except Exception as e:
+                st.error(f"{jobs[idx]['name']} 生成失败:{e}")
+            counter["c"] += 1
+            progress.progress(counter["c"] / n, text=f"已完成 {counter['c']}/{n} 张...")
+
+    return [r for r in results if r]
 
 
 # ===========================================================================
@@ -726,27 +843,10 @@ def render_ecommerce(api_key):
                                         n_model=n_model, n_scene=n_scene)
 
             run_dir = new_run_dir()
-            results = []
-            progress = st.progress(0.0, text="准备中...")
+            progress = st.progress(0.0, text=f"并发生成中(同时 {IMG_WORKERS} 张)...")
             preview = st.empty()
-            for i, job in enumerate(jobs, 1):
-                progress.progress((i - 1) / len(jobs), text=f"生成第 {i}/{len(jobs)} 张 · {job['name']}...")
-                try:
-                    # 模特图:整套产品图 + 模特参考图;场景图:只用整套产品图
-                    if job["use_model_ref"]:
-                        refs = product_refs[:13] + model_refs
-                    else:
-                        refs = product_refs
-                    raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
-                    png = upscale_png(raw_png, scale)
-                    name = f"{shop}_{job['name']}"
-                    fpath = os.path.join(run_dir, f"{name}.png")
-                    with open(fpath, "wb") as fp:
-                        fp.write(png)
-                    results.append((name, fpath))  # 存路径不存大图,防内存爆掉
-                    preview.image(png, caption=f"刚生成:{name}", width=260)
-                except Exception as e:
-                    st.error(f"{job['name']} 生成失败:{e}")
+            results = _gen_ec_batch(client, model, provider, jobs, shop, product_refs,
+                                    model_refs, scale, run_dir, progress, preview)
             progress.progress(1.0, text="完成")
             preview.empty()
             st.session_state["ec_results"] = results
