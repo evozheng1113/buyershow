@@ -23,9 +23,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 from openai import OpenAI
 
-# 并发生成的线程数:中转站文档建议 6~8,这里保守取 4(更稳,少触发限流)。
-# 想更快可调大;报错变多就调小。
-IMG_WORKERS = 4
+# 并发生成的线程数。服务器已升到 8GB 内存,取 6(中转站文档建议 6~8)。
+# 想更快可调到 8;若中转站报限流/内存吃紧再往回调。
+IMG_WORKERS = 6
 
 # 版本号:三个文件必须一致;页面底部自动校验,不一致会红字报警(=有文件没传齐)
 VERSION = "3.8"
@@ -550,8 +550,11 @@ def render_buyer_show(api_key):
     with scol1:
         season = st.selectbox("季节(决定穿搭)", options=["不限", "夏天", "冬天"], index=0, key="bs_season")
     with scol2:
-        env = st.selectbox("场景环境", options=["不限", "室内", "户外", "轻奢日常"], index=0, key="bs_env",
-                           help="轻奢日常:iPhone 俯拍手部特写、多件叠戴 + 奢牌手袋/皮鞋压角、暖调家居氛围(微购相册富家太太风)")
+        env = st.selectbox("场景环境", options=["不限", "室内", "户外", "轻奢日常", "老钱种草(金仑同款)"],
+                           index=0, key="bs_env",
+                           help="轻奢日常:iPhone 俯拍手部特写、多件叠戴 + 奢牌手袋压角、暖调家居。\n"
+                                "老钱种草(金仑同款):手部/局部近景不露脸、暖调奶油胶片、亚麻/棉帆布/原木/大理石背景、"
+                                "单侧暖柔光——对标金仑爆款素人号,做小红书种草最像真人、最不显 AI(建议配合「不露脸」)。")
 
     mode = st.radio("生成模式", options=["分场景(每场景3张·同一买家)", "无要求(20张各不相同)"],
                     index=0, horizontal=True, key="bs_mode")
