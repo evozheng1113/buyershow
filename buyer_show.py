@@ -395,14 +395,9 @@ def build_grouped_scenes(jewelry_type: str = "自动判断", season: str = "不�
 
     n = max(1, min(6, n_scenes))
     worn = _worn_scenes(env)  # 已随机打乱
-    # 分场景模式已【去掉"手拿组"】——同事反馈:手拿着首饰、还露脸的那种基本是废片
-    # (项链变手链、手拿露脸不自然)。所以分场景只出:真人佩戴(为主)+ 1 组首饰盒。
-    n_box = 1 if n >= 2 else 0
-    n_worn = n - n_box
-
-    bases = [("worn", "wearing", WORN_TPL.format(body=sp + b)) for b in worn[:n_worn]]
-    if n_box:
-        bases.append(("box", "box_black", BOX_TPL.format(body=BOX_FIXED[0][1])))
+    # 分场景模式已去掉"手拿组"和"人物手持首饰盒组"——同事反馈:手拿、以及人物端着戒指盒
+    # 和产品一起拍,出来效果差又假。所以分场景【只出真人佩戴】。
+    bases = [("worn", "wearing", WORN_TPL.format(body=sp + b)) for b in worn[:n]]
 
     tpl = {"worn": WORN_TPL, "held": HELD_TPL, "box": BOX_TPL}
     scenes = []
