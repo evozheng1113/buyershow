@@ -1149,6 +1149,14 @@ def render_xhs(api_key):
                     prog1.progress(done / len(rows), text=f"写文案 {done}/{len(rows)}...")
             prog1.progress(1.0, text="文案完成")
 
+        # 文案先落盘:万一后面出图中途断了,这 N 篇文案+标签也不会丢
+        _p, _x = _xhs_save_xlsx(rows, run_dir)
+        st.session_state["xhs_rows"] = rows
+        st.session_state["xhs_run_dir"] = run_dir
+        st.session_state["xhs_table"] = _p
+        st.session_state["xhs_is_xlsx"] = _x
+        st.info("✅ 文案+标签已先存盘(本批次文件夹),后面出图即使中断也不会丢。")
+
         # ---- 阶段2:出图(慢,IMG_WORKERS 篇并发)----
         prog2 = st.progress(0.0, text=f"出图中(同时 {IMG_WORKERS} 篇)...")
         preview = st.empty()
@@ -1184,6 +1192,18 @@ def render_xhs(api_key):
         st.session_state["xhs_table"] = table_path
         st.session_state["xhs_is_xlsx"] = is_xlsx
         st.success(f"完成!共 {len(rows)} 篇。分发表和图片都存到了本批次(历史记录里也能找回)。")
+
+    # ---- 找回最近一次批次(上次跑断了也能把文案表拿回)----
+    import glob as _glob
+    if os.path.isdir(OUTPUT_ROOT):
+        _cands = sorted(_glob.glob(os.path.join(OUTPUT_ROOT, "run_*", "小红书分发表.*")),
+                        reverse=True)
+        if _cands:
+            with st.expander("📂 找回最近一次批次的分发表(上次跑到一半断了?点这里)"):
+                with open(_cands[0], "rb") as _f:
+                    st.download_button("下载最近的分发表", data=_f.read(),
+                                       file_name=os.path.basename(_cands[0]),
+                                       key="xhs_recover_dl")
 
     # ---- 展示 + 下载(从会话状态)----
     if st.session_state.get("xhs_table"):
