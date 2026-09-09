@@ -9,6 +9,7 @@
 - 硬性:必带该款「短板」(承认缺点才真实)、用到规格/材质/工艺/卖点、正文尽量 180+ 字。
 """
 import random
+import re
 
 # ============================ 标签规则(移植 writer.py) ============================
 # 品类词按 cat 分开,避免 #钻石手链 串进项链笔记。
@@ -16,7 +17,10 @@ import random
     "项链": ["#钻石项链", "#钻石项链款式", "#18K金项链", "#钻石吊坠", "#锁骨链", "#轻珠宝"],
     "手链": ["#钻石手链", "#钻石手链款式", "#18K金手链", "#轻珠宝", "#叠戴"],
     "耳饰": ["#钻石耳钉", "#钻石耳扣", "#18K金耳钉", "#轻珠宝", "#耳饰分享"],
+    "戒指": ["#钻石戒指", "#钻戒", "#18K金戒指", "#轻珠宝", "#戒指分享"],
 }
+# 类型归一(填吊坠按项链走标签,手镯按手链走标签)
+_CAT_NORM = {"吊坠": "项链", "手镯": "手链", "耳钉": "耳饰", "耳环": "耳饰", "耳钉/耳环": "耳饰"}
 通用词 = ["#培育钻", "#钻石", "#培育钻石", "#日常首饰", "#珠宝分享", "#首饰分享", "#日常穿搭"]
 情绪词 = ["#提升精致度的首饰", "#珠宝搭配", "#珠宝就要blingbling", "#行走的小灯泡",
           "#首饰就要闪闪发光的", "#把星星戴在身上", "#今天出门戴什么", "#长期主义",
@@ -25,6 +29,7 @@ import random
     "项链": ["#宝藏项链分享", "#迷人的锁骨链", "#项链就要与众不同", "#高级感项链", "#百搭项链"],
     "手链": ["#手链分享", "#叠戴", "#手腕上的风景"],
     "耳饰": ["#耳饰分享", "#养耳洞", "#耳饰搭配"],
+    "戒指": ["#戒指分享", "#叠戴出奇迹", "#晒晒我的钻戒"],
 }
 
 
@@ -32,7 +37,8 @@ def build_tags(d, rng=None, n=9):
     """为一款生成 n 个小红书话题标签。
     固定:品牌词×2(#利奥星钻 + #培育钻石利奥星钻) + 该款黑话×1;其余从分品类池补齐、去重。"""
     r = rng or random
-    cat = d.get("cat", "项链")
+    _c = d.get("cat", "项链")
+    cat = _CAT_NORM.get(_c, _c)
     tags = ["#利奥星钻", "#培育钻石利奥星钻"]
     黑 = d.get("黑话") or []
     if 黑:
@@ -135,3 +141,79 @@ def split_title_body(text):
     if not body:  # 没有正文就把全部当正文
         body = (text or "").strip()
     return title, body
+
+
+# ============================ 产品库表格(方案B:同事在 Excel 里加行改款)============================
+# 一张独立 Excel,同事维护;App 里上传即用。列顺序如下(表头带说明也能认,按列名开头匹配)。
+TEMPLATE_COLS = [
+    "款式名称", "类型(项链/手链/耳饰/戒指/吊坠/手镯)", "规格(多个用;分隔)", "材质",
+    "工艺", "工艺描述(镶嵌特征,越具体越准)", "卖点(多条用;分隔)", "短板(多条用;分隔)",
+    "黑话标签(多个用;带#)", "说法(可选:规格=说法;规格=说法)",
+]
+
+
+def _split(s):
+    # 多值只按分号/换行拆;不拆顿号「、」(它常出现在单条卖点内部,如"进光多、火彩活")
+    return [x.strip() for x in re.split(r"[;；\n]+", str(s or "")) if x and str(x).strip()]
+
+
+def _parse_shuofa(s):
+    out = {}
+    for seg in _split(s):
+        if "=" in seg:
+            k, v = seg.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def load_products_from_xlsx(file_like):
+    """从上传的产品库 Excel 解析出 PRODUCTS 结构。按列名开头匹配,容忍表头带说明文字。
+    跳过空行和以'例/('开头的说明行。返回 {款式名: {...}}。"""
+    import openpyxl
+    wb = openpyxl.load_workbook(file_like, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return {}
+    header = [str(c).strip() if c is not None else "" for c in rows[0]]
+
+    def col(*keys):
+        for i, h in enumerate(header):
+            for k in keys:
+                if h.startswith(k):
+                    return i
+        return None
+
+    ci = {
+        "名称": col("款式名称", "名称"), "类型": col("类型"), "规格": col("规格"),
+        "材质": col("材质"), "工艺描述": col("工艺描述"), "工艺": col("工艺"),
+        "卖点": col("卖点"), "短板": col("短板"), "黑话": col("黑话"), "说法": col("说法"),
+    }
+
+    def cell(r, key):
+        i = ci.get(key)
+        return r[i] if (i is not None and i < len(r)) else None
+
+    prods = {}
+    for r in rows[1:]:
+        if not r:
+            continue
+        name = cell(r, "名称")
+        if not name:
+            continue
+        name = str(name).strip()
+        if not name or name[0] in "(（例#":
+            continue
+        cat = (str(cell(r, "类型") or "项链").strip() or "项链")
+        黑 = _split(cell(r, "黑话"))
+        黑 = [x if x.startswith("#") else "#" + x for x in 黑]
+        prods[name] = {
+            "cat": cat, "昵称": name, "黑话": (黑 or ["#" + name]),
+            "规格": _split(cell(r, "规格")), "直径": {},
+            "材质": str(cell(r, "材质") or "").strip(),
+            "工艺": str(cell(r, "工艺") or "").strip(),
+            "工艺描述": str(cell(r, "工艺描述") or "").strip(),
+            "卖点": _split(cell(r, "卖点")), "短板": _split(cell(r, "短板")),
+            "说法": _parse_shuofa(cell(r, "说法")),
+        }
+    return prods

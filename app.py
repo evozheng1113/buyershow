@@ -1002,7 +1002,8 @@ def render_history():
 # ===========================================================================
 # 标签 5:小红书素人种草(批量:选款 → 每篇 3 张老钱种草图 + 标题/正文/标签)
 # ===========================================================================
-_CAT2JTYPE = {"项链": "项链", "手链": "手链", "耳饰": "耳钉/耳环"}
+_CAT2JTYPE = {"项链": "项链", "手链": "手链", "耳饰": "耳钉/耳环", "耳钉/耳环": "耳钉/耳环",
+              "戒指": "戒指", "吊坠": "项链", "手镯": "手镯", "脚链": "脚链"}
 
 
 def _xhs_gen_copy(text_client, prod, tone, rng):
@@ -1065,6 +1066,22 @@ def render_xhs(api_key):
                "(每篇 3 张「老钱种草」图 + 标题/正文/标签),导出分发表 + 图片包。")
     engine = engine_selectbox("xhs_engine")
     prods = _xhs_prod.PRODUCTS
+    with st.expander("🗂 用自己的产品库(可选:上传 产品库.xlsx,同事在 Excel 里加款/改款就行)"):
+        st.caption("不传就用内置 13 款。用我给的『产品库_模板.xlsx』:每款一行——"
+                   "款式名称/类型/规格/材质/工艺/工艺描述/卖点/短板/黑话/说法(多值用分号;分隔)。"
+                   "卖点、短板这几列请人工填,是笔记出效果的关键。")
+        pf = st.file_uploader("上传产品库.xlsx", type=["xlsx"], key="xhs_prodlib")
+        if pf is not None:
+            try:
+                loaded = _xhs_writer.load_products_from_xlsx(pf)
+                if loaded:
+                    prods = loaded
+                    st.success(f"已载入你的产品库,共 {len(prods)} 款:"
+                               + "、".join(list(prods.keys())[:20]))
+                else:
+                    st.warning("表格里没读到款式,先用内置 13 款。检查是否填了『款式名称』列。")
+            except Exception as e:
+                st.error(f"产品库读取失败(先用内置 13 款):{e}")
     names = list(prods.keys())
     picked = st.multiselect("① 选款式(可多选,建议 ≤6)", options=names,
                             default=names[:1], key="xhs_pick")
