@@ -53,6 +53,9 @@ from ecommerce import (
     build_ecommerce_jobs,
     digital_model_prompts,
 )
+import random as _random
+import xhs_products as _xhs_prod
+import xhs_writer as _xhs_writer
 
 st.set_page_config(page_title="珠宝图片生成器", page_icon="💎", layout="wide")
 
@@ -997,6 +1000,220 @@ def render_history():
 
 
 # ===========================================================================
+# 标签 5:小红书素人种草(批量:选款 → 每篇 3 张老钱种草图 + 标题/正文/标签)
+# ===========================================================================
+_CAT2JTYPE = {"项链": "项链", "手链": "手链", "耳饰": "耳钉/耳环"}
+
+
+def _xhs_gen_copy(text_client, prod, tone, rng):
+    """一篇文案:GPT 写标题+正文,规则生成标签。返回 dict。"""
+    msgs, real_tone, spec = _xhs_writer.build_copy_messages(prod, tone=tone, rng=rng)
+    r = text_client.chat.completions.create(model=COPY_MODEL, messages=msgs, temperature=0.95)
+    title, body = _xhs_writer.split_title_body(r.choices[0].message.content)
+    return {"tone": real_tone, "spec": spec, "title": title, "body": body,
+            "tags": _xhs_writer.tags_str(prod, rng)}
+
+
+def _xhs_note_images(img_client, model, provider, jewelry, second, jtype,
+                     run_dir, note_id, show_face):
+    """一篇的 3 张老钱种草图(同一手/场景换角度)。返回图片文件名列表。"""
+    scenes = build_grouped_scenes(jewelry_type=jtype, env="老钱种草(金仑同款)", n_scenes=1)
+    base_png, names = None, []
+    for s in scenes:
+        if s.get("ref") == "base":
+            sec = ("base.png", base_png) if base_png else second
+        else:
+            sec = second
+        png = generate_one(img_client, jewelry, sec, s, model, provider,
+                           quality="high", show_face=show_face)
+        fp = os.path.join(run_dir, f"{note_id}_{s['name']}.png")
+        with open(fp, "wb") as f:
+            f.write(png)
+        names.append(os.path.basename(fp))
+        if s.get("var") == 0:
+            base_png = png
+    return names
+
+
+def _xhs_save_xlsx(rows, run_dir):
+    """写小红书分发表。有 openpyxl 出 xlsx,没有就退回 csv。返回(路径, 是否xlsx)。"""
+    header = ["序号", "款式", "类型", "规格", "口吻", "标题", "正文", "标签", "图片文件名"]
+    def _row(i, r):
+        return [i, r.get("款式", ""), r.get("cat", ""), r.get("spec", ""), r.get("tone", ""),
+                r.get("title", ""), r.get("body", ""), r.get("tags", ""),
+                "；".join(r.get("图片", []) or [])]
+    try:
+        import openpyxl
+        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "分发表"
+        ws.append(header)
+        for i, r in enumerate(rows, 1):
+            ws.append(_row(i, r))
+        p = os.path.join(run_dir, "小红书分发表.xlsx"); wb.save(p)
+        return p, True
+    except Exception:
+        import csv
+        p = os.path.join(run_dir, "小红书分发表.csv")
+        with open(p, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f); w.writerow(header)
+            for i, r in enumerate(rows, 1):
+                w.writerow(_row(i, r))
+        return p, False
+
+
+def render_xhs(api_key):
+    st.caption("小红书素人种草批量:选款(预置 13 款)→ 给每款传白底图/模特图 → 一次出 N 篇"
+               "(每篇 3 张「老钱种草」图 + 标题/正文/标签),导出分发表 + 图片包。")
+    engine = engine_selectbox("xhs_engine")
+    prods = _xhs_prod.PRODUCTS
+    names = list(prods.keys())
+    picked = st.multiselect("① 选款式(可多选,建议 ≤6)", options=names,
+                            default=names[:1], key="xhs_pick")
+    if not picked:
+        st.info("先选至少一个款式。")
+        return
+
+    st.markdown("② 给每个选中的款式传参考图(**白底图必填**;模特图可选,喂了手部/上身更稳、更保真):")
+    refs = {}
+    for nm in picked:
+        d = prods[nm]
+        with st.expander(f"📦 {nm}（{d['cat']}）"):
+            st.caption("卖点:" + "；".join(d.get("卖点") or []) +
+                       "　|　短板:" + "；".join(d.get("短板") or []))
+            c1, c2 = st.columns(2)
+            with c1:
+                wf = st.file_uploader("白底图(必填)", type=["png", "jpg", "jpeg", "webp"],
+                                      key=f"xhs_w_{nm}")
+            with c2:
+                mf = st.file_uploader("模特图(可选)", type=["png", "jpg", "jpeg", "webp"],
+                                      key=f"xhs_m_{nm}")
+            refs[nm] = (wf, mf)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        total = st.slider("③ 总篇数", 3, 120, 30, key="xhs_total",
+                          help="每篇=3张图+1篇文案。100篇约1小时、几十美元;"
+                               "建议先小批量(20-30)试通了再放大,浏览器要一直开着。")
+    with c2:
+        tone = st.selectbox("文案口吻", options=["混合(碎碎念7:清冷3)", "碎碎念", "清冷"],
+                            index=0, key="xhs_tone")
+    with c3:
+        show_face = st.radio("模特脸部", options=["不露脸(推荐)", "露脸"],
+                             index=0, horizontal=True, key="xhs_face") == "露脸"
+    tone_key = {"混合(碎碎念7:清冷3)": "混合", "碎碎念": "碎碎念", "清冷": "清冷"}[tone]
+    st.caption(f"{len(picked)} 款 × 平均分配 = 共 {total} 篇;每篇 3 张 → 约 {total*3} 张图。")
+
+    if st.button("🚀 开始批量生成", type="primary", use_container_width=True, key="xhs_run"):
+        missing = [nm for nm in picked if not refs[nm][0]]
+        if missing:
+            st.warning("这些款还没传白底图:" + "、".join(missing))
+            st.stop()
+        try:
+            img_client, model, provider = make_image_client(engine)
+        except Exception as e:
+            st.error(str(e)); st.stop()
+        text_client = OpenAI(api_key=api_key) if api_key else None
+
+        jbytes, mbytes = {}, {}
+        for nm in picked:
+            wf, mf = refs[nm]
+            jbytes[nm] = to_named_bytes(wf, f"{nm}.png")
+            mbytes[nm] = to_named_bytes(mf, f"{nm}_m.png") if mf else None
+
+        rows = []
+        for idx in range(1, total + 1):
+            nm = picked[(idx - 1) % len(picked)]  # 轮流分配,尽量均匀
+            rows.append({"id": f"{idx:03d}_{prods[nm]['昵称']}", "款式": nm, "cat": prods[nm]["cat"]})
+
+        run_dir = new_run_dir()
+
+        # ---- 阶段1:文案+标签(快)----
+        if text_client is None:
+            st.warning("服务器没有 OPENAI_API_KEY,这次只出图、不出文案。")
+        else:
+            prog1 = st.progress(0.0, text="写文案中...")
+            done = 0
+
+            def _cw(i):
+                nm = rows[i]["款式"]
+                return i, _xhs_gen_copy(text_client, prods[nm], tone_key, _random.Random())
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                futs = {ex.submit(_cw, i): i for i in range(len(rows))}
+                for fut in as_completed(futs):
+                    i = futs[fut]
+                    try:
+                        _, c = fut.result(); rows[i].update(c)
+                    except Exception as e:
+                        rows[i].update({"tone": "", "spec": "", "title": "(文案生成失败)",
+                                        "body": str(e), "tags": ""})
+                    done += 1
+                    prog1.progress(done / len(rows), text=f"写文案 {done}/{len(rows)}...")
+            prog1.progress(1.0, text="文案完成")
+
+        # ---- 阶段2:出图(慢,IMG_WORKERS 篇并发)----
+        prog2 = st.progress(0.0, text=f"出图中(同时 {IMG_WORKERS} 篇)...")
+        preview = st.empty()
+        donec = 0
+
+        def _iw(i):
+            nm = rows[i]["款式"]
+            jtype = _CAT2JTYPE.get(prods[nm]["cat"], "自动判断")
+            paths = _xhs_note_images(img_client, model, provider, jbytes[nm], mbytes[nm],
+                                     jtype, run_dir, rows[i]["id"], show_face)
+            return i, paths
+        with ThreadPoolExecutor(max_workers=IMG_WORKERS) as ex:
+            futs = {ex.submit(_iw, i): i for i in range(len(rows))}
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    _, paths = fut.result(); rows[i]["图片"] = paths
+                    try:
+                        preview.image(os.path.join(run_dir, paths[0]),
+                                      caption=rows[i]["id"], width=200)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    rows[i]["图片"] = []
+                    st.error(f"{rows[i]['id']} 出图失败:{e}")
+                donec += 1
+                prog2.progress(donec / len(rows), text=f"出图 {donec}/{len(rows)} 篇...")
+        prog2.progress(1.0, text="出图完成"); preview.empty()
+
+        table_path, is_xlsx = _xhs_save_xlsx(rows, run_dir)
+        st.session_state["xhs_rows"] = rows
+        st.session_state["xhs_run_dir"] = run_dir
+        st.session_state["xhs_table"] = table_path
+        st.session_state["xhs_is_xlsx"] = is_xlsx
+        st.success(f"完成!共 {len(rows)} 篇。分发表和图片都存到了本批次(历史记录里也能找回)。")
+
+    # ---- 展示 + 下载(从会话状态)----
+    if st.session_state.get("xhs_table"):
+        table_path = st.session_state["xhs_table"]
+        run_dir = st.session_state["xhs_run_dir"]
+        rows = st.session_state.get("xhs_rows") or []
+        is_xlsx = st.session_state.get("xhs_is_xlsx", True)
+        with open(table_path, "rb") as f:
+            st.download_button("📊 下载小红书分发表(" + ("xlsx" if is_xlsx else "csv") + ")",
+                               data=f.read(), file_name=os.path.basename(table_path),
+                               use_container_width=True, key="xhs_dl_table")
+        import glob
+        imgs = sorted(glob.glob(os.path.join(run_dir, "*.png")))
+        if imgs and st.button(f"📦 打包下载全部图片({len(imgs)} 张)", key="xhs_zip_btn"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in imgs:
+                    zf.write(p, os.path.basename(p))
+            st.download_button("⬇️ 点这里下载 zip", data=buf.getvalue(),
+                               file_name="小红书图片.zip", mime="application/zip",
+                               use_container_width=True, key="xhs_dl_zip")
+        st.markdown("**预览(前 3 篇文案)**")
+        for r in rows[:3]:
+            st.markdown(f"**{r.get('款式','')}** · {r.get('tone','')} · {r.get('spec','')}")
+            st.text("标题:" + str(r.get("title", "")))
+            st.text(str(r.get("body", ""))[:220])
+            st.caption(str(r.get("tags", "")))
+
+
+# ===========================================================================
 # 页面
 # ===========================================================================
 st.title("💎 珠宝图片生成器")
@@ -1008,12 +1225,15 @@ if not api_key:
     st.warning("服务器未配置 OPENAI_API_KEY;文案功能和「OpenAI官方」引擎将不可用,"
                "但中转站引擎(需配置 AISHARE_API_KEY)仍可生图。")
 
-buyer_tab, ecom_tab, up_tab, his_tab = st.tabs(
-    ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "🔍 图片放大", "📁 历史记录"])
+buyer_tab, ecom_tab, xhs_tab, up_tab, his_tab = st.tabs(
+    ["📸 买家秀(生活感)", "💎 电商精修图(高级棚拍)", "📕 小红书种草(批量)",
+     "🔍 图片放大", "📁 历史记录"])
 with buyer_tab:
     render_buyer_show(api_key)
 with ecom_tab:
     render_ecommerce(api_key)
+with xhs_tab:
+    render_xhs(api_key)
 with up_tab:
     render_upscale()
 with his_tab:
