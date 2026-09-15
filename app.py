@@ -1004,15 +1004,20 @@ def render_history():
 # ===========================================================================
 _CAT2JTYPE = {"项链": "项链", "手链": "手链", "耳饰": "耳钉/耳环", "耳钉/耳环": "耳钉/耳环",
               "戒指": "戒指", "吊坠": "项链", "手镯": "手镯", "脚链": "脚链"}
+_COMPOSITION = {"项链": "颈部上身 / 掌心托举 / 局部近景", "手链": "手腕近景 / 叠戴展示 / 局部特写",
+                "耳饰": "侧脸耳部 / 局部近景 / 手撩发", "戒指": "手背戴戒 / 叠戴展示 / 局部特写",
+                "吊坠": "颈部上身 / 掌心托举 / 局部近景", "手镯": "手腕近景 / 局部特写 / 叠戴展示"}
 
 
 def _xhs_gen_copy(text_client, prod, tone, rng):
-    """一篇文案:GPT 写标题+正文,规则生成标签。返回 dict。"""
+    """一篇文案:GPT 写标题+正文,规则生成标签 + 评论脚本 + 构图。返回 dict。"""
     msgs, real_tone, spec = _xhs_writer.build_copy_messages(prod, tone=tone, rng=rng)
     r = text_client.chat.completions.create(model=COPY_MODEL, messages=msgs, temperature=0.95)
     title, body = _xhs_writer.split_title_body(r.choices[0].message.content)
     return {"tone": real_tone, "spec": spec, "title": title, "body": body,
-            "tags": _xhs_writer.tags_str(prod, rng)}
+            "tags": _xhs_writer.tags_str(prod, rng),
+            "comments": _xhs_writer.build_comments(prod, rng),
+            "构图": _COMPOSITION.get(prod.get("cat", ""), "手部/局部近景 3 张")}
 
 
 def _xhs_note_images(img_client, model, provider, jewelry, second, jtype,
@@ -1037,12 +1042,20 @@ def _xhs_note_images(img_client, model, provider, jewelry, second, jtype,
 
 
 def _xhs_save_xlsx(rows, run_dir):
-    """写小红书分发表。有 openpyxl 出 xlsx,没有就退回 csv。返回(路径, 是否xlsx)。"""
-    header = ["序号", "款式", "类型", "规格", "口吻", "标题", "正文", "标签", "图片文件名"]
+    """写小红书分发表(照客户第三批 100 篇的列格式)。有 openpyxl 出 xlsx,没有退回 csv。"""
+    header = ["编号", "产品", "品类", "标题", "正文", "标签", "图1", "图2", "图3",
+              "评论脚本", "构图", "分配账号", "计划发布日期", "状态", "发布链接",
+              "赞", "藏", "评", "备注"]
+
     def _row(i, r):
-        return [i, r.get("款式", ""), r.get("cat", ""), r.get("spec", ""), r.get("tone", ""),
-                r.get("title", ""), r.get("body", ""), r.get("tags", ""),
-                "；".join(r.get("图片", []) or [])]
+        imgs = r.get("图片", []) or []
+        g1 = imgs[0] if len(imgs) > 0 else ""
+        g2 = imgs[1] if len(imgs) > 1 else ""
+        g3 = imgs[2] if len(imgs) > 2 else ""
+        return [f"P{i:03d}", r.get("款式", ""), r.get("cat", ""), r.get("title", ""),
+                r.get("body", ""), r.get("tags", ""), g1, g2, g3,
+                r.get("comments", ""), r.get("构图", ""), "", "", "待审核", "",
+                "", "", "", ""]
     try:
         import openpyxl
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "分发表"
