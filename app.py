@@ -1058,10 +1058,38 @@ def _xhs_save_xlsx(rows, run_dir):
                 "", "", "", ""]
     try:
         import openpyxl
+        from openpyxl.drawing.image import Image as XLImage
+        from PIL import Image as PImage
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "分发表"
         ws.append(header)
+        thumb_dir = os.path.join(run_dir, "_thumbs")
+        os.makedirs(thumb_dir, exist_ok=True)
+        img_col = {0: "G", 1: "H", 2: "I"}  # 图1/图2/图3
         for i, r in enumerate(rows, 1):
             ws.append(_row(i, r))
+            xr = i + 1  # 数据行(第1行是表头)
+            imgs = r.get("图片", []) or []
+            if imgs:
+                ws.row_dimensions[xr].height = 96  # 行高留给略缩图
+                for j in range(min(3, len(imgs))):
+                    src = os.path.join(run_dir, imgs[j])
+                    if not os.path.exists(src):
+                        continue
+                    try:
+                        im = PImage.open(src).convert("RGB")
+                        im.thumbnail((120, 120))
+                        tp = os.path.join(thumb_dir, f"t_{i}_{j}.png")
+                        im.save(tp, "PNG")
+                        cell = f"{img_col[j]}{xr}"
+                        ws[cell] = ""  # 清掉文件名文字,把格子让给图
+                        xi = XLImage(tp)
+                        xi.anchor = cell
+                        ws.add_image(xi)
+                    except Exception:
+                        pass  # 单张嵌图失败不影响整表
+        for c, w in {"A": 8, "B": 14, "C": 8, "D": 24, "E": 46, "F": 34,
+                     "G": 18, "H": 18, "I": 18, "J": 30, "K": 22}.items():
+            ws.column_dimensions[c].width = w
         p = os.path.join(run_dir, "小红书分发表.xlsx"); wb.save(p)
         return p, True
     except Exception:
