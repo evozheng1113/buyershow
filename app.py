@@ -1009,21 +1009,22 @@ _COMPOSITION = {"项链": "颈部上身 / 掌心托举 / 局部近景", "手链"
                 "吊坠": "颈部上身 / 掌心托举 / 局部近景", "手镯": "手腕近景 / 局部特写 / 叠戴展示"}
 
 
-def _xhs_gen_copy(text_client, prod, tone, rng):
-    """一篇文案:GPT 写标题+正文,规则生成标签 + 评论脚本 + 构图。返回 dict。"""
-    msgs, real_tone, spec = _xhs_writer.build_copy_messages(prod, tone=tone, rng=rng)
-    r = text_client.chat.completions.create(model=COPY_MODEL, messages=msgs, temperature=0.95)
+def _xhs_gen_copy(text_client, prod, persona, title_style, rng):
+    """一篇文案:GPT 按指定人设+标题套路写标题+正文,规则生成标签+评论脚本+构图。返回 dict。"""
+    msgs, pname, spec = _xhs_writer.build_copy_messages(
+        prod, persona=persona, title_style=title_style, rng=rng)
+    r = text_client.chat.completions.create(model=COPY_MODEL, messages=msgs, temperature=0.98)
     title, body = _xhs_writer.split_title_body(r.choices[0].message.content)
-    return {"tone": real_tone, "spec": spec, "title": title, "body": body,
+    return {"tone": pname, "spec": spec, "title": title, "body": body,
             "tags": _xhs_writer.tags_str(prod, rng),
             "comments": _xhs_writer.build_comments(prod, rng),
             "构图": _COMPOSITION.get(prod.get("cat", ""), "手部/局部近景 3 张")}
 
 
 def _xhs_note_images(img_client, model, provider, jewelry, second, jtype,
-                     run_dir, note_id, show_face):
-    """一篇的 3 张老钱种草图(同一手/场景换角度)。返回图片文件名列表。"""
-    scenes = build_grouped_scenes(jewelry_type=jtype, env="老钱种草(金仑同款)", n_scenes=1)
+                     run_dir, note_id, show_face, env="老钱种草(金仑同款)"):
+    """一篇的 3 张图(同一场景换角度);env 决定这篇的场景风格,篇间轮换拉开差异。"""
+    scenes = build_grouped_scenes(jewelry_type=jtype, env=env, n_scenes=1)
     base_png, names = None, []
     for s in scenes:
         if s.get("ref") == "base":
@@ -1052,10 +1053,11 @@ def _xhs_save_xlsx(rows, run_dir):
         g1 = imgs[0] if len(imgs) > 0 else ""
         g2 = imgs[1] if len(imgs) > 1 else ""
         g3 = imgs[2] if len(imgs) > 2 else ""
+        beizhu = f"人设:{r.get('tone','')} / 场景:{r.get('_env','')}".strip(" /")
         return [f"P{i:03d}", r.get("款式", ""), r.get("cat", ""), r.get("title", ""),
                 r.get("body", ""), r.get("tags", ""), g1, g2, g3,
                 r.get("comments", ""), r.get("构图", ""), "", "", "待审核", "",
-                "", "", "", ""]
+                "", "", "", beizhu]
     try:
         import openpyxl
         from openpyxl.drawing.image import Image as XLImage
@@ -1146,19 +1148,28 @@ def render_xhs(api_key):
                                       key=f"xhs_m_{nm}")
             refs[nm] = (wf, mf)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         total = st.slider("③ 总篇数", 3, 120, 30, key="xhs_total",
                           help="每篇=3张图+1篇文案。100篇约1小时、几十美元;"
                                "建议先小批量(20-30)试通了再放大,浏览器要一直开着。")
     with c2:
-        tone = st.selectbox("文案口吻", options=["混合(碎碎念7:清冷3)", "碎碎念", "清冷"],
-                            index=0, key="xhs_tone")
-    with c3:
         show_face = st.radio("模特脸部", options=["不露脸(推荐)", "露脸"],
                              index=0, horizontal=True, key="xhs_face") == "露脸"
-    tone_key = {"混合(碎碎念7:清冷3)": "混合", "碎碎念": "碎碎念", "清冷": "清冷"}[tone]
-    st.caption(f"{len(picked)} 款 × 平均分配 = 共 {total} 篇;每篇 3 张 → 约 {total*3} 张图。")
+    persona_names = [p[0] for p in _xhs_writer.PERSONAS]
+    picked_personas = st.multiselect(
+        "④ 人设分流(每篇轮流用一个,让文案不再全是通勤党、拉开差异)",
+        options=persona_names, default=persona_names, key="xhs_personas")
+    env_opts = ["老钱种草(金仑同款)", "轻奢日常", "室内", "户外"]
+    picked_envs = st.multiselect(
+        "⑤ 场景风格轮换(每篇换一种,让模特姿态/构图/光线/穿搭/背景明显不同,防限流)",
+        options=env_opts, default=env_opts, key="xhs_envs")
+    if not picked_personas:
+        picked_personas = persona_names
+    if not picked_envs:
+        picked_envs = ["老钱种草(金仑同款)"]
+    st.caption(f"{len(picked)} 款 × 平均分配 = 共 {total} 篇;人设 {len(picked_personas)} 种、"
+               f"场景 {len(picked_envs)} 种、标题 7 种套路轮换;每篇 3 张 → 约 {total*3} 张图。")
 
     if st.button("🚀 开始批量生成", type="primary", use_container_width=True, key="xhs_run"):
         missing = [nm for nm in picked if not refs[nm][0]]
@@ -1177,10 +1188,19 @@ def render_xhs(api_key):
             jbytes[nm] = to_named_bytes(wf, f"{nm}.png")
             mbytes[nm] = to_named_bytes(mf, f"{nm}_m.png") if mf else None
 
+        personas_sel = [p for p in _xhs_writer.PERSONAS if p[0] in picked_personas] \
+            or _xhs_writer.PERSONAS
+        titles = _xhs_writer.TITLE_STYLES
         rows = []
         for idx in range(1, total + 1):
-            nm = picked[(idx - 1) % len(picked)]  # 轮流分配,尽量均匀
-            rows.append({"id": f"{idx:03d}_{prods[nm]['昵称']}", "款式": nm, "cat": prods[nm]["cat"]})
+            k = idx - 1
+            nm = picked[k % len(picked)]
+            # 三条轴用不同步长轮换,尽量避免"同款+同人设+同场景"重复组合
+            persona = personas_sel[k % len(personas_sel)]
+            title_style = titles[(k * 3 + 1) % len(titles)]
+            env = picked_envs[k % len(picked_envs)]
+            rows.append({"id": f"{idx:03d}_{prods[nm]['昵称']}", "款式": nm, "cat": prods[nm]["cat"],
+                         "_persona": persona, "_title": title_style, "_env": env})
 
         run_dir = new_run_dir()
 
@@ -1193,7 +1213,8 @@ def render_xhs(api_key):
 
             def _cw(i):
                 nm = rows[i]["款式"]
-                return i, _xhs_gen_copy(text_client, prods[nm], tone_key, _random.Random())
+                return i, _xhs_gen_copy(text_client, prods[nm], rows[i]["_persona"],
+                                        rows[i]["_title"], _random.Random())
             with ThreadPoolExecutor(max_workers=6) as ex:
                 futs = {ex.submit(_cw, i): i for i in range(len(rows))}
                 for fut in as_completed(futs):
@@ -1224,7 +1245,8 @@ def render_xhs(api_key):
             nm = rows[i]["款式"]
             jtype = _CAT2JTYPE.get(prods[nm]["cat"], "自动判断")
             paths = _xhs_note_images(img_client, model, provider, jbytes[nm], mbytes[nm],
-                                     jtype, run_dir, rows[i]["id"], show_face)
+                                     jtype, run_dir, rows[i]["id"], show_face,
+                                     env=rows[i].get("_env", "老钱种草(金仑同款)"))
             return i, paths
         with ThreadPoolExecutor(max_workers=IMG_WORKERS) as ex:
             futs = {ex.submit(_iw, i): i for i in range(len(rows))}
