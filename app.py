@@ -148,25 +148,26 @@ def _img_bytes_from_result(result):
     raise RuntimeError("生图返回里既没有图片数据也没有 URL。")
 
 
-def _crop_center_3x4(png_bytes):
-    """把图居中裁成 3:4 竖图(宽:高=3:4)。
-    banana(gemini-3-pro-image)一律输出 2048×2048 方图 → 裁成 1536×2048(约2K,3:4)。
-    裁掉的是两侧虚化背景,不损主体构图。已经是 3:4 或更竖的图基本不动。"""
+def _crop_center_3x4(png_bytes, target_size=(1536, 2048)):
+    """把任意图归一化成【固定竖图 2K】(默认 1536×2048,3:4)。
+    banana 通过中转站返回的尺寸时大时小、有时方图,所以这里:先居中裁成 3:4,
+    再统一缩放到固定 2K,保证每张都是同样的竖图尺寸,不再一会方一会竖、一会小图。"""
     from PIL import Image
     im = Image.open(io.BytesIO(png_bytes)).convert("RGB")
     w, h = im.size
-    target = 3 / 4  # 宽/高
+    tw, th = target_size
+    tr = tw / th  # 目标宽高比 0.75(3:4)
     ratio = w / h
-    if abs(ratio - target) < 0.01:
-        return png_bytes  # 已经是 3:4,原样返回
-    if ratio > target:          # 太宽(含方图)→ 裁两侧
-        nw = int(round(h * target))
+    if ratio > tr:              # 太宽/方图 → 裁两侧
+        nw = int(round(h * tr))
         left = (w - nw) // 2
         im = im.crop((left, 0, left + nw, h))
-    else:                       # 太竖 → 裁上下
-        nh = int(round(w / target))
+    elif ratio < tr:           # 太竖 → 裁上下
+        nh = int(round(w / tr))
         top = (h - nh) // 2
         im = im.crop((0, top, w, top + nh))
+    if im.size != (tw, th):    # 统一缩放到固定 2K 竖图
+        im = im.resize((tw, th), Image.LANCZOS)
     out = io.BytesIO()
     im.save(out, "PNG")
     return out.getvalue()
@@ -711,7 +712,8 @@ def _gen_ec_batch(client, model, provider, jobs, shop, product_refs, model_refs,
         job = jobs[i]
         refs = (product_refs[:13] + model_refs) if job["use_model_ref"] else product_refs
         raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
-        png = upscale_png(raw_png, scale)
+        # banana 已归一化成固定 2K 竖图,不再叠加放大(否则又变大/尺寸不一);gpt-image 才按选择放大
+        png = raw_png if provider == "aishare" else upscale_png(raw_png, scale)
         name = f"{shop}_{job['name']}"
         fpath = os.path.join(run_dir, f"{name}.png")
         with open(fpath, "wb") as fp:
@@ -808,8 +810,11 @@ def render_ecommerce(api_key):
                             index=0, key="ec_what")
         include = {"模特图 + 场景图": "both", "只出模特图": "model", "只出场景图": "scene"}[gen_what]
     with gcol2:
-        out_scale = st.selectbox("输出尺寸", options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
-                                 index=0, key="ec_scale")
+        out_scale = st.selectbox("输出尺寸(仅 gpt-image 官方生效)",
+                                 options=["放大2倍(约2048×3072)", "放大到4K(约2730×4096)", "标准(1024×1536)"],
+                                 index=0, key="ec_scale",
+                                 help="nano banana 固定输出竖图 2K(1536×2048),不受此项影响;"
+                                      "这里只对 gpt-image 官方引擎生效。")
     scale = {"标准(1024×1536)": 1.0, "放大2倍(约2048×3072)": 2.0, "放大到4K(约2730×4096)": 2.67}[out_scale]
 
     ec_show_face = st.radio("模特脸部(仅影响模特图)", options=["不露脸(推荐)", "露脸"],
@@ -884,7 +889,7 @@ def render_ecommerce(api_key):
                 refs = (ctx["product_refs"][:13] + ctx["model_refs"]) if job["use_model_ref"] \
                     else ctx["product_refs"]
                 raw_png = generate_ecom(client, refs, job["prompt"], model, provider)
-                png = upscale_png(raw_png, ctx["scale"])
+                png = raw_png if provider == "aishare" else upscale_png(raw_png, ctx["scale"])
             fpath = os.path.join(ctx["run_dir"], f"{name}.png")
             with open(fpath, "wb") as fp:
                 fp.write(png)
