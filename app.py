@@ -349,10 +349,11 @@ def generate_one(client, jewelry, second, scene, model, provider, quality=QUALIT
     images = [(jewelry[0], io.BytesIO(jewelry[1]))]
     if second is not None:
         images.append((second[0], io.BytesIO(second[1])))
-    png = _edit(client, model, images, full_prompt, SIZE,
+    _size = "1536x2048" if provider == "aishare" else SIZE  # banana 传竖图尺寸,原生出竖图
+    png = _edit(client, model, images, full_prompt, _size,
                 quality if provider == "openai" else None)
     if provider == "aishare":
-        png = _crop_center_3x4(png)  # banana 出方图,裁成 3:4
+        png = _crop_center_3x4(png)  # 归一化成固定 1536×2048 竖图 2K
     return png
 
 
@@ -416,10 +417,11 @@ def select_model_refs(models, jtype):
 def generate_ecom(client, ref_images, prompt, model, provider, quality=ECOM_QUALITY):
     """ref_images 是参考图列表 [(name,bytes), ...](最多 16 张):产品整套图 +(模特图)。"""
     imgs = [(n, io.BytesIO(b)) for (n, b) in ref_images[:16]]
-    png = _edit(client, model, imgs, prompt, ECOM_SIZE,
+    _size = "1536x2048" if provider == "aishare" else ECOM_SIZE  # banana 传竖图尺寸
+    png = _edit(client, model, imgs, prompt, _size,
                 quality if provider == "openai" else None)
     if provider == "aishare":
-        png = _crop_center_3x4(png)  # banana 出方图,裁成 3:4
+        png = _crop_center_3x4(png)  # 归一化成固定 1536×2048 竖图 2K
     return png
 
 
@@ -440,8 +442,10 @@ def generate_digital_model(client, shop, model, provider):
     """为店铺生成数字模特三张参考图:① 肩颈(文生图) ② 手部 ③ 侧脸耳朵(均参考①保持同一人)。"""
     neck_p, hand_p, ear_p = digital_model_prompts(shop)
 
+    _size = "1536x2048" if provider == "aishare" else ECOM_SIZE
+
     def gen(prompt):
-        kwargs = dict(model=model, prompt=prompt, size=ECOM_SIZE, n=1)
+        kwargs = dict(model=model, prompt=prompt, size=_size, n=1)
         if provider == "openai":
             kwargs["quality"] = ECOM_QUALITY
         return _img_bytes_from_result(client.images.generate(**kwargs))
@@ -449,7 +453,7 @@ def generate_digital_model(client, shop, model, provider):
     neck_png = gen(neck_p)
 
     def edit_from_neck(prompt):
-        return _edit(client, model, [("neck.png", io.BytesIO(neck_png))], prompt, ECOM_SIZE,
+        return _edit(client, model, [("neck.png", io.BytesIO(neck_png))], prompt, _size,
                      ECOM_QUALITY if provider == "openai" else None)
 
     hand_png = edit_from_neck(hand_p)
