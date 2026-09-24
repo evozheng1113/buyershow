@@ -73,9 +73,15 @@ COPY_MODEL = "gpt-4o-mini"
 # ===========================================================================
 IMAGE_ENGINES = {
     "gpt-image-2(OpenAI官方直连)": {"provider": "openai", "model": "gpt-image-2"},
+    "gpt-image-2(中转站·便宜≈5分/张)": {"provider": "aishare", "model": "gpt-image-2"},
     "nano banana Pro(中转站·更强≈3毛/张)": {"provider": "aishare", "model": "gemini-3-pro-image"},
 }
 DEFAULT_ENGINE = "gpt-image-2(OpenAI官方直连)"
+
+
+def _is_banana(model):
+    """是否为 nano banana(Gemini 系)模型——它需要传竖图尺寸并归一化到 2K;gpt-image 不用。"""
+    return str(model).startswith("gemini")
 AISHARE_DEFAULT_BASE = "https://ashare.token6688.com/v1"
 
 
@@ -349,11 +355,11 @@ def generate_one(client, jewelry, second, scene, model, provider, quality=QUALIT
     images = [(jewelry[0], io.BytesIO(jewelry[1]))]
     if second is not None:
         images.append((second[0], io.BytesIO(second[1])))
-    _size = "1536x2048" if provider == "aishare" else SIZE  # banana 传竖图尺寸,原生出竖图
+    _size = "1536x2048" if _is_banana(model) else SIZE  # 只有 banana 传竖图尺寸
     png = _edit(client, model, images, full_prompt, _size,
                 quality if provider == "openai" else None)
-    if provider == "aishare":
-        png = _crop_center_3x4(png)  # 归一化成固定 1536×2048 竖图 2K
+    if _is_banana(model):
+        png = _crop_center_3x4(png)  # banana 归一化成固定 1536×2048 竖图 2K
     return png
 
 
@@ -417,11 +423,11 @@ def select_model_refs(models, jtype):
 def generate_ecom(client, ref_images, prompt, model, provider, quality=ECOM_QUALITY):
     """ref_images 是参考图列表 [(name,bytes), ...](最多 16 张):产品整套图 +(模特图)。"""
     imgs = [(n, io.BytesIO(b)) for (n, b) in ref_images[:16]]
-    _size = "1536x2048" if provider == "aishare" else ECOM_SIZE  # banana 传竖图尺寸
+    _size = "1536x2048" if _is_banana(model) else ECOM_SIZE  # 只有 banana 传竖图尺寸
     png = _edit(client, model, imgs, prompt, _size,
                 quality if provider == "openai" else None)
-    if provider == "aishare":
-        png = _crop_center_3x4(png)  # 归一化成固定 1536×2048 竖图 2K
+    if _is_banana(model):
+        png = _crop_center_3x4(png)  # banana 归一化成固定 1536×2048 竖图 2K
     return png
 
 
@@ -442,7 +448,7 @@ def generate_digital_model(client, shop, model, provider):
     """为店铺生成数字模特三张参考图:① 肩颈(文生图) ② 手部 ③ 侧脸耳朵(均参考①保持同一人)。"""
     neck_p, hand_p, ear_p = digital_model_prompts(shop)
 
-    _size = "1536x2048" if provider == "aishare" else ECOM_SIZE
+    _size = "1536x2048" if _is_banana(model) else ECOM_SIZE
 
     def gen(prompt):
         kwargs = dict(model=model, prompt=prompt, size=_size, n=1)
@@ -458,7 +464,7 @@ def generate_digital_model(client, shop, model, provider):
 
     hand_png = edit_from_neck(hand_p)
     ear_png = edit_from_neck(ear_p)
-    if provider == "aishare":
+    if _is_banana(model):
         neck_png = _crop_center_3x4(neck_png)
         hand_png = _crop_center_3x4(hand_png)
         ear_png = _crop_center_3x4(ear_png)
