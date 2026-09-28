@@ -564,7 +564,8 @@ def render_buyer_show(api_key):
     with scol1:
         season = st.selectbox("季节(决定穿搭)", options=["不限", "夏天", "冬天"], index=0, key="bs_season")
     with scol2:
-        env = st.selectbox("场景环境", options=["不限", "室内", "户外", "轻奢日常", "老钱种草(金仑同款)"],
+        env = st.selectbox("场景环境",
+                           options=["不限", "室内", "户外", "轻奢日常", "老钱种草(金仑同款)", "婷婷风格(锁骨自拍)"],
                            index=0, key="bs_env",
                            help="轻奢日常:iPhone 俯拍手部特写、多件叠戴 + 奢牌手袋压角、暖调家居。\n"
                                 "老钱种草(金仑同款):手部/局部近景不露脸、暖调奶油胶片、亚麻/棉帆布/原木/大理石背景、"
@@ -1175,7 +1176,7 @@ def render_xhs(api_key):
     picked_personas = st.multiselect(
         "④ 人设分流(每篇轮流用一个,让文案不再全是通勤党、拉开差异)",
         options=persona_names, default=persona_names, key="xhs_personas")
-    env_opts = ["老钱种草(金仑同款)", "轻奢日常", "室内", "户外"]
+    env_opts = ["老钱种草(金仑同款)", "婷婷风格(锁骨自拍)", "轻奢日常", "室内", "户外"]
     picked_envs = st.multiselect(
         "⑤ 场景风格轮换(每篇换一种,让模特姿态/构图/光线/穿搭/背景明显不同,防限流)",
         options=env_opts, default=env_opts, key="xhs_envs")
